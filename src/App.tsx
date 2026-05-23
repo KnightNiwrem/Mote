@@ -1,4 +1,5 @@
 import { GameHost } from "@/game/GameHost";
+import { VirtualControls } from "@/game/VirtualControls";
 import "./index.css";
 
 export function App() {
@@ -17,6 +18,7 @@ export function App() {
         <div className="relative aspect-[16/9] w-full overflow-hidden rounded-lg border border-[#2f6b56] bg-black shadow-2xl shadow-black/30">
           <GameHost />
         </div>
+        <VirtualControls />
       </section>
     </main>
   );

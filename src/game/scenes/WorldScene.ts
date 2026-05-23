@@ -10,6 +10,7 @@ import {
   type WorldMapId,
   type WorldNpc,
 } from "@/game/data/maps";
+import { GAME_CONTROL_EVENT, type GameControlInput } from "@/game/input";
 import {
   canMoveTo,
   findNpcFacing,
@@ -51,6 +52,8 @@ export class WorldScene extends Phaser.Scene {
   private playerTile: GridPosition = WORLD_MAPS.garden.start;
   private facing: Direction = "down";
   private moving = false;
+  private touchActionQueued = false;
+  private touchDirection: Direction | null = null;
   private dialogueBox: Phaser.GameObjects.Container | null = null;
   private dialogueText: Phaser.GameObjects.Text | null = null;
   private promptText: Phaser.GameObjects.Text | null = null;
@@ -66,6 +69,8 @@ export class WorldScene extends Phaser.Scene {
     this.playerTile = data.playerTile ?? this.worldMap.start;
     this.facing = "down";
     this.moving = false;
+    this.touchActionQueued = false;
+    this.touchDirection = null;
   }
 
   create() {
@@ -178,6 +183,11 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private createControls() {
+    window.addEventListener(GAME_CONTROL_EVENT, this.handleGameControl);
+    this.events.once("shutdown", () => {
+      window.removeEventListener(GAME_CONTROL_EVENT, this.handleGameControl);
+    });
+
     if (!this.input.keyboard) {
       return;
     }
@@ -206,7 +216,7 @@ export class WorldScene extends Phaser.Scene {
       .setScrollFactor(0);
 
     this.promptText = this.add
-      .text(160, 156, "E / Space: Talk", {
+      .text(160, 156, "Talk", {
         color: "#f8fafc",
         fontFamily: "monospace",
         fontSize: "8px",
@@ -228,7 +238,7 @@ export class WorldScene extends Phaser.Scene {
       lineSpacing: 3,
       wordWrap: { width: 276 },
     });
-    const closeText = this.add.text(250, 166, "E", {
+    const closeText = this.add.text(250, 166, "A", {
       color: "#badbcc",
       fontFamily: "monospace",
       fontSize: "8px",
@@ -269,11 +279,15 @@ export class WorldScene extends Phaser.Scene {
       return "down";
     }
 
-    return null;
+    return this.touchDirection;
   }
 
   private isInteractPressed(): boolean {
     const space = this.cursors?.space;
+    if (this.touchActionQueued) {
+      this.touchActionQueued = false;
+      return true;
+    }
 
     return Boolean(
       (space && Phaser.Input.Keyboard.JustDown(space)) ||
@@ -340,6 +354,24 @@ export class WorldScene extends Phaser.Scene {
     this.dialogueBox?.setVisible(false);
     this.updatePrompt();
   }
+
+  private readonly handleGameControl = (event: Event) => {
+    const input = (event as CustomEvent<GameControlInput>).detail;
+
+    switch (input.type) {
+      case "direction-start":
+        this.touchDirection = input.direction;
+        break;
+      case "direction-end":
+        if (this.touchDirection === input.direction) {
+          this.touchDirection = null;
+        }
+        break;
+      case "action":
+        this.touchActionQueued = true;
+        break;
+    }
+  };
 }
 
 function tileToWorldCenter(position: GridPosition): GridPosition {
