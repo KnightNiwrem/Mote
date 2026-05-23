@@ -1,0 +1,58 @@
+import type { MoveDefinition } from "@/game/types/game";
+
+export const MOTE_MOVES: Record<string, MoveDefinition> = {
+  "spark-tap": {
+    id: "spark-tap",
+    name: "Spark Tap",
+    role: "damage",
+    power: 14,
+    accuracy: 100,
+    energyCost: 2,
+    tags: ["light", "starter"],
+  },
+  "guard-pulse": {
+    id: "guard-pulse",
+    name: "Guard Pulse",
+    role: "support",
+    power: 0,
+    accuracy: 100,
+    energyCost: 2,
+    tags: ["shield", "steady"],
+  },
+  "quick-loop": {
+    id: "quick-loop",
+    name: "Quick Loop",
+    role: "damage",
+    power: 11,
+    accuracy: 100,
+    energyCost: 1,
+    tags: ["speed", "precise"],
+  },
+  "soft-reset": {
+    id: "soft-reset",
+    name: "Soft Reset",
+    role: "recovery",
+    power: 10,
+    accuracy: 100,
+    energyCost: 3,
+    tags: ["care", "recovery"],
+  },
+  "root-jab": {
+    id: "root-jab",
+    name: "Root Jab",
+    role: "damage",
+    power: 12,
+    accuracy: 95,
+    energyCost: 2,
+    tags: ["garden", "steady"],
+  },
+  "stone-bump": {
+    id: "stone-bump",
+    name: "Stone Bump",
+    role: "damage",
+    power: 16,
+    accuracy: 90,
+    energyCost: 2,
+    tags: ["sturdy", "heavy"],
+  },
+};

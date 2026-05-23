@@ -20,11 +20,21 @@ import {
   getCompanionDialogue,
 } from "@/game/systems/companion";
 import {
+  getOccupiedCircleSlots,
+  updateCircleSlot,
+} from "@/game/systems/moteCircle";
+import {
   canMoveTo,
   findNpcFacing,
   findTransitionAt,
   getNextTile,
 } from "@/game/systems/movement";
+import {
+  createInitialSaveGame,
+  loadOrCreateSaveGame,
+  saveGame,
+} from "@/game/systems/save";
+import type { SaveGame } from "@/game/types/save";
 
 type InteractionMode = "none" | "dialogue" | "garden-menu" | "garden-result";
 
@@ -73,22 +83,26 @@ export class WorldScene extends Phaser.Scene {
   private selectedGardenActionIndex = 0;
   private interactionMode: InteractionMode = "none";
   private companionState: CompanionState = createInitialCompanionState();
+  private currentSave: SaveGame = createInitialSaveGame();
 
   constructor() {
     super("World");
   }
 
   init(data: WorldSceneData) {
-    const mapId = data.mapId ?? "garden";
+    this.currentSave = loadOrCreateSaveGame();
+    const mapId = data.mapId ?? this.currentSave.player.currentMapId;
 
     this.worldMap = WORLD_MAPS[mapId];
-    this.playerTile = data.playerTile ?? this.worldMap.start;
+    this.playerTile = data.playerTile ?? this.currentSave.player.position;
     this.facing = "down";
     this.moving = false;
     this.touchActionQueued = false;
     this.touchDirection = null;
     this.selectedGardenActionIndex = 0;
     this.interactionMode = "none";
+    this.companionState = this.createCompanionStateFromSave();
+    this.persistProgress();
   }
 
   create() {
@@ -284,6 +298,7 @@ export class WorldScene extends Phaser.Scene {
       this.companionState,
       selectedAction.id,
     );
+    this.persistProgress();
     this.gardenMenu?.setVisible(false);
     this.interactionMode = "garden-result";
     this.dialogueHintText?.setText("A");
@@ -451,23 +466,56 @@ export class WorldScene extends Phaser.Scene {
       ease: "Linear",
       onComplete: () => {
         this.moving = false;
-        this.handleTransition();
+        if (this.handleTransition()) {
+          return;
+        }
+
+        this.persistProgress();
         this.updatePrompt();
       },
     });
   }
 
-  private handleTransition() {
+  private handleTransition(): boolean {
     const transition = findTransitionAt(this.worldMap, this.playerTile);
 
     if (!transition) {
-      return;
+      return false;
     }
 
     this.scene.restart({
       mapId: transition.toMapId,
       playerTile: transition.toPosition,
     } satisfies WorldSceneData);
+    return true;
+  }
+
+  private createCompanionStateFromSave(): CompanionState {
+    const initialState = createInitialCompanionState();
+    const companionSlot = getOccupiedCircleSlots(this.currentSave.circle)[0];
+
+    return {
+      ...initialState,
+      bond: companionSlot?.bond ?? initialState.bond,
+    };
+  }
+
+  private persistProgress() {
+    this.currentSave = {
+      ...this.currentSave,
+      player: {
+        ...this.currentSave.player,
+        currentMapId: this.worldMap.id,
+        position: this.playerTile,
+      },
+      circle: updateCircleSlot(this.currentSave.circle, 0, (slot) =>
+        slot.state === "occupied"
+          ? { ...slot, bond: this.companionState.bond }
+          : slot,
+      ),
+    };
+
+    saveGame(this.currentSave);
   }
 
   private updatePrompt() {
