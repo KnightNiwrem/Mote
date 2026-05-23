@@ -12,13 +12,16 @@ The architecture should keep simulation rules independent from rendering. Battle
 - UI: React 19 and TypeScript
 - Styling: Tailwind CSS 4
 - Components: shadcn/ui-style components and Radix primitives
+- Game runtime: Phaser 4.1.0
 - Validation: Biome, TypeScript, Bun test, production build
 
 ## Proposed Runtime Additions
 
-### Phaser 3
+### Phaser 4
 
-Use Phaser for the game canvas. Phaser provides scene lifecycles, spritesheet animation, cameras, input, tilemap loading, and Arcade Physics for top-down movement and collisions.
+Use Phaser 4 for the game canvas. Phaser provides scene lifecycles, spritesheet animation, cameras, input, tilemap loading, and Arcade Physics for top-down movement and collisions.
+
+Because Mote is a greenfield project, target Phaser 4 APIs directly. Keep the first slice on standard Phaser objects and systems such as scenes, sprites, text, tilemaps, cameras, and Arcade Physics. Avoid Phaser 3-era renderer pipelines, custom renderer internals, and shader assumptions unless a later milestone explicitly requires custom rendering.
 
 ### Tiled
 

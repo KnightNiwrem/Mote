@@ -10,10 +10,10 @@ Goal: prepare the project for Phaser-based game development.
 
 Tasks:
 
-- Add Phaser as a dependency.
+- Add Phaser 4.1.0 as an exact dependency.
 - Add `src/game/` structure.
 - Create `GameHost.tsx` to mount and destroy the Phaser instance from React.
-- Add a minimal Phaser config with pixel-art rendering.
+- Add a minimal Phaser 4 config with pixel-art rendering.
 - Add placeholder asset folders.
 - Add smoke test coverage for any pure setup helpers.
 
