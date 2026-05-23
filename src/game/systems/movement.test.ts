@@ -34,6 +34,9 @@ test("blocked tiles, bounds, and NPCs stop movement", () => {
 test("interaction finds the NPC on the faced tile", () => {
   const garden = WORLD_MAPS.garden;
 
+  expect(findNpcFacing(garden, garden.start, "down")?.id).toBe(
+    "first-companion",
+  );
   expect(findNpcFacing(garden, { x: 14, y: 8 }, "up")?.id).toBe(
     "tessera-guide",
   );

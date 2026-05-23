@@ -20,6 +20,7 @@ export type WorldMapId = "garden" | "motehaven-path";
 export type WorldNpc = {
   id: string;
   name: string;
+  kind?: "npc" | "companion";
   position: GridPosition;
   dialogue: string[];
 };
@@ -106,6 +107,13 @@ export const WORLD_MAPS: Record<WorldMapId, WorldMap> = {
     blockedTiles: [TILE_IDS.hedge, TILE_IDS.water, TILE_IDS.flowers],
     npcs: [
       {
+        id: "first-companion",
+        name: "Luma",
+        kind: "companion",
+        position: { x: 6, y: 14 },
+        dialogue: [],
+      },
+      {
         id: "tessera-guide",
         name: "Guide Mira",
         position: { x: 14, y: 7 },
@@ -125,7 +133,7 @@ export const WORLD_MAPS: Record<WorldMapId, WorldMap> = {
   },
   "motehaven-path": {
     id: "motehaven-path",
-    name: "Motehaven Path",
+    name: "Motehaven Route 1",
     width: 24,
     height: 16,
     start: { x: 1, y: 8 },

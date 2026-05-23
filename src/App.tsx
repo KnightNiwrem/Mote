@@ -9,10 +9,10 @@ export function App() {
         <header className="flex shrink-0 items-end justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold leading-none">Mote</h1>
-            <p className="mt-1 text-sm text-[#badbcc]">Overworld foundation</p>
+            <p className="mt-1 text-sm text-[#badbcc]">Garden slice</p>
           </div>
           <p className="text-xs font-medium uppercase tracking-[0.16em] text-[#7dd3fc]">
-            Phase 1
+            Phase 2
           </p>
         </header>
         <div className="relative aspect-[16/9] w-full overflow-hidden rounded-lg border border-[#2f6b56] bg-black shadow-2xl shadow-black/30">

@@ -12,11 +12,21 @@ import {
 } from "@/game/data/maps";
 import { GAME_CONTROL_EVENT, type GameControlInput } from "@/game/input";
 import {
+  applyGardenAction,
+  COMPANION_NAME,
+  type CompanionState,
+  createInitialCompanionState,
+  GARDEN_ACTIONS,
+  getCompanionDialogue,
+} from "@/game/systems/companion";
+import {
   canMoveTo,
   findNpcFacing,
   findTransitionAt,
   getNextTile,
 } from "@/game/systems/movement";
+
+type InteractionMode = "none" | "dialogue" | "garden-menu" | "garden-result";
 
 type WorldSceneData = {
   mapId?: WorldMapId;
@@ -56,7 +66,13 @@ export class WorldScene extends Phaser.Scene {
   private touchDirection: Direction | null = null;
   private dialogueBox: Phaser.GameObjects.Container | null = null;
   private dialogueText: Phaser.GameObjects.Text | null = null;
+  private dialogueHintText: Phaser.GameObjects.Text | null = null;
+  private gardenMenu: Phaser.GameObjects.Container | null = null;
+  private gardenMenuItems: Phaser.GameObjects.Text[] = [];
   private promptText: Phaser.GameObjects.Text | null = null;
+  private selectedGardenActionIndex = 0;
+  private interactionMode: InteractionMode = "none";
+  private companionState: CompanionState = createInitialCompanionState();
 
   constructor() {
     super("World");
@@ -71,6 +87,8 @@ export class WorldScene extends Phaser.Scene {
     this.moving = false;
     this.touchActionQueued = false;
     this.touchDirection = null;
+    this.selectedGardenActionIndex = 0;
+    this.interactionMode = "none";
   }
 
   create() {
@@ -87,19 +105,33 @@ export class WorldScene extends Phaser.Scene {
 
   override update() {
     if (this.isInteractPressed()) {
-      if (this.dialogueBox?.visible) {
+      if (this.interactionMode === "garden-menu") {
+        this.applySelectedGardenAction();
+        return;
+      }
+
+      if (this.interactionMode !== "none") {
         this.hideDialogue();
         return;
       }
 
       const npc = findNpcFacing(this.worldMap, this.playerTile, this.facing);
       if (npc) {
-        this.showDialogue(npc);
+        if (npc.kind === "companion") {
+          this.showCompanionMenu();
+        } else {
+          this.showDialogue(npc);
+        }
         return;
       }
     }
 
-    if (this.dialogueBox?.visible || this.moving) {
+    if (this.interactionMode === "garden-menu") {
+      this.updateGardenMenuInput();
+      return;
+    }
+
+    if (this.interactionMode !== "none" || this.moving) {
       return;
     }
 
@@ -166,11 +198,111 @@ export class WorldScene extends Phaser.Scene {
   private renderNpcs() {
     for (const npc of this.worldMap.npcs) {
       const position = tileToWorldCenter(npc.position);
+      const fillColor = npc.kind === "companion" ? 0xe879f9 : 0x7dd3fc;
+      const strokeColor = npc.kind === "companion" ? 0x4a154b : 0x123047;
+
       this.add
-        .rectangle(position.x, position.y, 12, 14, 0x7dd3fc)
-        .setStrokeStyle(1, 0x123047)
+        .rectangle(position.x, position.y, 12, 14, fillColor)
+        .setStrokeStyle(1, strokeColor)
         .setDepth(5);
+
+      if (npc.kind === "companion") {
+        this.add
+          .circle(position.x + 3, position.y - 2, 2, 0xfdf4ff)
+          .setDepth(6);
+      }
     }
+  }
+
+  private createGardenMenu() {
+    const panel = this.add
+      .rectangle(260, 72, 104, 78, 0x101820, 0.96)
+      .setStrokeStyle(1, 0xe879f9);
+
+    this.gardenMenuItems = GARDEN_ACTIONS.map((action, index) =>
+      this.add.text(214, 42 + index * 15, action.label, {
+        color: "#f8fafc",
+        fontFamily: "monospace",
+        fontSize: "9px",
+      }),
+    );
+
+    this.gardenMenu = this.add
+      .container(0, 0, [panel, ...this.gardenMenuItems])
+      .setDepth(31)
+      .setScrollFactor(0)
+      .setVisible(false);
+  }
+
+  private updateGardenMenuItems() {
+    for (const [index, text] of this.gardenMenuItems.entries()) {
+      const action = GARDEN_ACTIONS[index];
+
+      if (!action) {
+        continue;
+      }
+
+      const isSelected = index === this.selectedGardenActionIndex;
+      text.setText(`${isSelected ? ">" : " "} ${action.label}`);
+      text.setColor(isSelected ? "#f5d0fe" : "#f8fafc");
+    }
+  }
+
+  private updateGardenMenuInput() {
+    if (this.isMenuDirectionPressed("up")) {
+      this.moveGardenMenuSelection(-1);
+    } else if (this.isMenuDirectionPressed("down")) {
+      this.moveGardenMenuSelection(1);
+    }
+  }
+
+  private moveGardenMenuSelection(delta: number) {
+    const actionCount = GARDEN_ACTIONS.length;
+    this.selectedGardenActionIndex =
+      (this.selectedGardenActionIndex + delta + actionCount) % actionCount;
+    this.updateGardenMenuItems();
+  }
+
+  private isMenuDirectionPressed(direction: "up" | "down"): boolean {
+    const cursor = direction === "up" ? this.cursors?.up : this.cursors?.down;
+    const key = direction === "up" ? this.keys?.w : this.keys?.s;
+
+    return Boolean(
+      (cursor && Phaser.Input.Keyboard.JustDown(cursor)) ||
+        (key && Phaser.Input.Keyboard.JustDown(key)),
+    );
+  }
+
+  private applySelectedGardenAction() {
+    const selectedAction = GARDEN_ACTIONS[this.selectedGardenActionIndex];
+
+    if (!selectedAction) {
+      return;
+    }
+
+    this.companionState = applyGardenAction(
+      this.companionState,
+      selectedAction.id,
+    );
+    this.gardenMenu?.setVisible(false);
+    this.interactionMode = "garden-result";
+    this.dialogueHintText?.setText("A");
+    this.dialogueText?.setText(
+      `${COMPANION_NAME}: ${selectedAction.message}\nBond ${this.companionState.bond}  Energy ${this.companionState.energy}`,
+    );
+  }
+
+  private showCompanionMenu() {
+    this.selectedGardenActionIndex = 0;
+    this.interactionMode = "garden-menu";
+    this.dialogueText?.setText(
+      `${COMPANION_NAME}: ${getCompanionDialogue(this.companionState)}\nBond ${this.companionState.bond}  Full ${this.companionState.fullness}`,
+    );
+    this.dialogueHintText?.setText("A Select");
+    this.dialogueBox?.setVisible(true);
+    this.gardenMenu?.setVisible(true);
+    this.promptText?.setVisible(false);
+    this.updateGardenMenuItems();
   }
 
   private createPlayer() {
@@ -243,12 +375,14 @@ export class WorldScene extends Phaser.Scene {
       fontFamily: "monospace",
       fontSize: "8px",
     });
+    this.dialogueHintText = closeText;
 
     this.dialogueBox = this.add
       .container(0, 0, [box, this.dialogueText, closeText])
       .setDepth(30)
       .setScrollFactor(0)
       .setVisible(false);
+    this.createGardenMenu();
   }
 
   private configureCamera() {
@@ -337,21 +471,29 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private updatePrompt() {
-    const hasNpc = Boolean(
-      findNpcFacing(this.worldMap, this.playerTile, this.facing),
-    );
+    const npc = findNpcFacing(this.worldMap, this.playerTile, this.facing);
 
-    this.promptText?.setVisible(hasNpc && !this.dialogueBox?.visible);
+    if (npc) {
+      this.promptText?.setText(npc.kind === "companion" ? "Care" : "Talk");
+    }
+
+    this.promptText?.setVisible(
+      Boolean(npc) && this.interactionMode === "none",
+    );
   }
 
   private showDialogue(npc: WorldNpc) {
+    this.interactionMode = "dialogue";
     this.dialogueText?.setText(`${npc.name}: ${npc.dialogue[0]}`);
+    this.dialogueHintText?.setText("A");
     this.dialogueBox?.setVisible(true);
     this.promptText?.setVisible(false);
   }
 
   private hideDialogue() {
+    this.interactionMode = "none";
     this.dialogueBox?.setVisible(false);
+    this.gardenMenu?.setVisible(false);
     this.updatePrompt();
   }
 
@@ -360,6 +502,14 @@ export class WorldScene extends Phaser.Scene {
 
     switch (input.type) {
       case "direction-start":
+        if (
+          this.interactionMode === "garden-menu" &&
+          (input.direction === "up" || input.direction === "down")
+        ) {
+          this.moveGardenMenuSelection(input.direction === "up" ? -1 : 1);
+          return;
+        }
+
         this.touchDirection = input.direction;
         break;
       case "direction-end":
