@@ -1,3 +1,4 @@
+import { parseEnv, parsePort, type RuntimeEnv } from "./env";
 import index from "./index.html";
 
 type StaticRoute = "/*";
@@ -9,20 +10,28 @@ type StaticServeOptions = Bun.Serve.Options<undefined, StaticRoute> & {
 
 type CreateServeOptionsInput = {
   development?: boolean;
+  port?: string | number;
+  env?: RuntimeEnv;
 };
 
 export function createServeOptions({
-  development = process.env.NODE_ENV !== "production",
+  development,
+  env = process.env,
+  port,
 }: CreateServeOptionsInput = {}): StaticServeOptions {
+  const parsedEnv = parseEnv(env);
+
   return {
+    port: parsePort(port ?? parsedEnv.PORT),
     routes: {
       "/*": index,
     },
-    development: development
-      ? {
-          hmr: true,
-          console: true,
-        }
-      : false,
+    development:
+      (development ?? parsedEnv.NODE_ENV !== "production")
+        ? {
+            hmr: true,
+            console: true,
+          }
+        : false,
   };
 }

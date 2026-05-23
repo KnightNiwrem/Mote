@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 import path from "node:path";
+import { parseEnv } from "../src/env";
 
 const distDir = path.resolve(process.cwd(), "dist");
 const indexPath = path.join(distDir, "index.html");
-const port = process.env.PORT ?? "4173";
+const { PORT: port } = parseEnv(process.env, { defaultPort: 4173 });
 
 function resolveDistPath(url: URL): string | undefined {
   let pathname: string;
