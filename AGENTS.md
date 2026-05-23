@@ -34,7 +34,7 @@
 
 1. Always run `bun install` first to ensure dependencies are installed
 2. Use `bun run dev` to start the local source server with hot reloading
-3. The server runs at `http://localhost:3000` by default. Use `PORT=4000 bun run dev` to override it.
+3. The server runs at `http://localhost:3000` by default. Agents may assume it is safe to own the default port for this project. If the port is already in use, identify and kill the process that owns it; the kill command will require manual approval review.
 
 ## Available Commands
 
