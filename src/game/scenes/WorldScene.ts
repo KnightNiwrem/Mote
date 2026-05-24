@@ -133,6 +133,8 @@ export class WorldScene extends Phaser.Scene {
       if (npc) {
         if (npc.kind === "companion") {
           this.showCompanionMenu();
+        } else if (npc.kind === "wild-mote") {
+          this.startWildBattle(npc);
         } else {
           this.showDialogue(npc);
         }
@@ -212,8 +214,18 @@ export class WorldScene extends Phaser.Scene {
   private renderNpcs() {
     for (const npc of this.worldMap.npcs) {
       const position = tileToWorldCenter(npc.position);
-      const fillColor = npc.kind === "companion" ? 0xe879f9 : 0x7dd3fc;
-      const strokeColor = npc.kind === "companion" ? 0x4a154b : 0x123047;
+      const fillColor =
+        npc.kind === "companion"
+          ? 0xe879f9
+          : npc.kind === "wild-mote"
+            ? 0xa7f3d0
+            : 0x7dd3fc;
+      const strokeColor =
+        npc.kind === "companion"
+          ? 0x4a154b
+          : npc.kind === "wild-mote"
+            ? 0x14532d
+            : 0x123047;
 
       this.add
         .rectangle(position.x, position.y, 12, 14, fillColor)
@@ -522,7 +534,7 @@ export class WorldScene extends Phaser.Scene {
     const npc = findNpcFacing(this.worldMap, this.playerTile, this.facing);
 
     if (npc) {
-      this.promptText?.setText(npc.kind === "companion" ? "Care" : "Talk");
+      this.promptText?.setText(getNpcPrompt(npc));
     }
 
     this.promptText?.setVisible(
@@ -536,6 +548,15 @@ export class WorldScene extends Phaser.Scene {
     this.dialogueHintText?.setText("A");
     this.dialogueBox?.setVisible(true);
     this.promptText?.setVisible(false);
+  }
+
+  private startWildBattle(npc: WorldNpc) {
+    this.persistProgress();
+    this.scene.start("Battle", {
+      returnMapId: this.worldMap.id,
+      returnTile: this.playerTile,
+      enemyBodyId: npc.battleBodyId ?? "reedling",
+    });
   }
 
   private hideDialogue() {
@@ -577,4 +598,16 @@ function tileToWorldCenter(position: GridPosition): GridPosition {
     x: position.x * TILE_SIZE + TILE_SIZE / 2,
     y: position.y * TILE_SIZE + TILE_SIZE / 2,
   };
+}
+
+function getNpcPrompt(npc: WorldNpc): string {
+  if (npc.kind === "companion") {
+    return "Care";
+  }
+
+  if (npc.kind === "wild-mote") {
+    return "Battle";
+  }
+
+  return "Talk";
 }

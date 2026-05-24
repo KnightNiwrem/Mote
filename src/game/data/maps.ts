@@ -20,9 +20,10 @@ export type WorldMapId = "garden" | "motehaven-path";
 export type WorldNpc = {
   id: string;
   name: string;
-  kind?: "npc" | "companion";
+  kind?: "npc" | "companion" | "wild-mote";
   position: GridPosition;
   dialogue: string[];
+  battleBodyId?: string;
 };
 
 export type MapTransition = {
@@ -139,7 +140,16 @@ export const WORLD_MAPS: Record<WorldMapId, WorldMap> = {
     start: { x: 1, y: 8 },
     tiles: rowsToTiles(motehavenPathRows),
     blockedTiles: [TILE_IDS.hedge, TILE_IDS.water, TILE_IDS.flowers],
-    npcs: [],
+    npcs: [
+      {
+        id: "route-reedling",
+        name: "Wild Reedling",
+        kind: "wild-mote",
+        position: { x: 5, y: 8 },
+        dialogue: ["The Reedling stamps once, ready to spar."],
+        battleBodyId: "reedling",
+      },
+    ],
     transitions: [
       {
         id: "path-west-gate",

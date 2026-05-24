@@ -1,6 +1,7 @@
 import * as Phaser from "phaser";
 import { useEffect, useRef } from "react";
 import { createGameConfig } from "./config";
+import { BattleScene } from "./scenes/BattleScene";
 import { BootScene } from "./scenes/BootScene";
 import { WorldScene } from "./scenes/WorldScene";
 
@@ -17,7 +18,7 @@ export function GameHost() {
         renderType: Phaser.AUTO,
         scaleMode: Phaser.Scale.FIT,
         autoCenter: Phaser.Scale.CENTER_BOTH,
-        scene: [BootScene, WorldScene],
+        scene: [BootScene, WorldScene, BattleScene],
       }),
     );
 
