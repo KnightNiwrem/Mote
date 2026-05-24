@@ -1,7 +1,13 @@
 import * as Phaser from "phaser";
 import { CHARACTER_TEXTURE_KEYS, ensurePolishTextures } from "@/game/art";
-import { playGameSound, primeAudio, startMusicLoop } from "@/game/audio";
+import {
+  type GameSound,
+  playGameSound,
+  primeAudio,
+  startMusicLoop,
+} from "@/game/audio";
 import { MOTE_BODIES } from "@/game/data/bodies";
+import { CUTSCENES, type CutsceneId } from "@/game/data/cutscenes";
 import type { DialogueId } from "@/game/data/dialogue";
 import {
   type Direction,
@@ -30,6 +36,7 @@ import {
   type GardenActionDefinition,
   getCompanionDialogue,
 } from "@/game/systems/companion";
+import { type CutsceneCommand, runCutscene } from "@/game/systems/cutscenes";
 import {
   advanceDialogue,
   type DialogueCommand,
@@ -148,6 +155,12 @@ export class WorldScene extends Phaser.Scene {
   private activeDialogueId: DialogueId | null = null;
   private activeDialogueNodeId: string | null = null;
   private activeDialogueVariables: DialogueVariables = {};
+  private activeDialogueView: DialogueView | null = null;
+  private activeDialogueChoiceIds: string[] = [];
+  private selectedDialogueChoiceIndex = 0;
+  private activeCutsceneCommands: CutsceneCommand[] = [];
+  private activeCutsceneCommandIndex = 0;
+  private cutsceneWaiting = false;
   private pausedByShell = false;
   private lastRuntimeStateKey = "";
 
@@ -171,6 +184,12 @@ export class WorldScene extends Phaser.Scene {
     this.activeDialogueId = null;
     this.activeDialogueNodeId = null;
     this.activeDialogueVariables = {};
+    this.activeDialogueView = null;
+    this.activeDialogueChoiceIds = [];
+    this.selectedDialogueChoiceIndex = 0;
+    this.activeCutsceneCommands = [];
+    this.activeCutsceneCommandIndex = 0;
+    this.cutsceneWaiting = false;
     this.pausedByShell = false;
     this.lastRuntimeStateKey = "";
     this.companionState = this.createCompanionStateFromSave();
@@ -197,6 +216,10 @@ export class WorldScene extends Phaser.Scene {
     this.publishRuntimeState();
 
     if (this.pausedByShell) {
+      return;
+    }
+
+    if (this.cutsceneWaiting) {
       return;
     }
 
@@ -236,6 +259,14 @@ export class WorldScene extends Phaser.Scene {
 
     if (this.interactionMode === "circle-menu") {
       this.updateCircleMenuInput();
+      return;
+    }
+
+    if (
+      this.interactionMode === "dialogue" &&
+      this.activeDialogueChoiceIds.length > 0
+    ) {
+      this.updateDialogueChoiceInput();
       return;
     }
 
@@ -375,6 +406,30 @@ export class WorldScene extends Phaser.Scene {
       this.moveGardenMenuSelection(-1);
     } else if (this.isMenuDirectionPressed("down")) {
       this.moveGardenMenuSelection(1);
+    }
+  }
+
+  private updateDialogueChoiceInput() {
+    if (this.isMenuDirectionPressed("up")) {
+      this.moveDialogueChoiceSelection(-1);
+    } else if (this.isMenuDirectionPressed("down")) {
+      this.moveDialogueChoiceSelection(1);
+    }
+  }
+
+  private moveDialogueChoiceSelection(delta: number) {
+    const choiceCount = this.activeDialogueChoiceIds.length;
+
+    if (choiceCount === 0) {
+      return;
+    }
+
+    this.selectedDialogueChoiceIndex =
+      (this.selectedDialogueChoiceIndex + delta + choiceCount) % choiceCount;
+    playGameSound("select");
+
+    if (this.activeDialogueView?.type === "choice") {
+      this.showDialogueView(this.activeDialogueView);
     }
   }
 
@@ -821,6 +876,9 @@ export class WorldScene extends Phaser.Scene {
     this.activeDialogueId = dialogueId;
     this.activeDialogueNodeId = nodeId;
     this.activeDialogueVariables = {};
+    this.activeDialogueView = null;
+    this.activeDialogueChoiceIds = [];
+    this.selectedDialogueChoiceIndex = 0;
     playGameSound("talk");
     this.showDialogueView(view);
   }
@@ -835,6 +893,7 @@ export class WorldScene extends Phaser.Scene {
       dialogueId: this.activeDialogueId,
       nodeId: this.activeDialogueNodeId,
       save: this.currentSave,
+      choiceId: this.activeDialogueChoiceIds[this.selectedDialogueChoiceIndex],
       variables: this.activeDialogueVariables,
     });
 
@@ -843,13 +902,20 @@ export class WorldScene extends Phaser.Scene {
 
     if (result.ended) {
       const commands = result.commands;
+      const shouldContinueCutscene = this.activeCutsceneCommands.length > 0;
 
       this.hideDialogue();
       this.handleDialogueCommands(commands);
+      if (shouldContinueCutscene) {
+        this.activeCutsceneCommandIndex += 1;
+        this.presentNextCutsceneCommand();
+      }
       return;
     }
 
     this.activeDialogueNodeId = result.nextNodeId;
+    this.activeDialogueChoiceIds = [];
+    this.selectedDialogueChoiceIndex = 0;
     this.showDialogueView(result.view);
 
     if (result.commands.length > 0) {
@@ -858,18 +924,30 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private showDialogueView(view: DialogueView) {
+    this.activeDialogueView = view;
+
     if (view.type === "line") {
+      this.activeDialogueChoiceIds = [];
       this.showDialogueText(view.speaker, view.text, "A");
       return;
     }
 
     if (view.type === "choice") {
+      this.activeDialogueChoiceIds = view.choices.map((choice) => choice.id);
+      this.selectedDialogueChoiceIndex = clamp(
+        this.selectedDialogueChoiceIndex,
+        0,
+        Math.max(0, view.choices.length - 1),
+      );
       this.showDialogueText(
         "Choice",
         [
           view.prompt,
           ...view.choices.map(
-            (choice, index) => `${index === 0 ? ">" : " "} ${choice.label}`,
+            (choice, index) =>
+              `${index === this.selectedDialogueChoiceIndex ? ">" : " "} ${
+                choice.label
+              }`,
           ),
         ].join("\n"),
         "A Select",
@@ -918,6 +996,9 @@ export class WorldScene extends Phaser.Scene {
     this.activeDialogueId = null;
     this.activeDialogueNodeId = null;
     this.activeDialogueVariables = {};
+    this.activeDialogueView = null;
+    this.activeDialogueChoiceIds = [];
+    this.selectedDialogueChoiceIndex = 0;
     this.dialogueBox?.setVisible(false);
     this.gardenMenu?.setVisible(false);
     this.updatePrompt();
@@ -930,6 +1011,13 @@ export class WorldScene extends Phaser.Scene {
           this.showCompanionMenu();
         } else if (command.menu === "circle") {
           this.showCircleMenu();
+        } else if (command.menu === "inventory" || command.menu === "quests") {
+          this.persistProgress();
+          dispatchGameRuntimeEvent({
+            type: "open-pause-menu",
+            panel: command.menu,
+            save: this.currentSave,
+          });
         }
       } else if (command.type === "startBattle") {
         if (command.battleKind === "trial" && command.trialId) {
@@ -937,7 +1025,85 @@ export class WorldScene extends Phaser.Scene {
         } else if (command.battleKind === "wild" && command.enemyBodyId) {
           this.startWildBattle(command.enemyBodyId);
         }
+      } else if (command.type === "startCutscene") {
+        this.runAndPresentCutscene(command.cutsceneId);
       }
+    }
+  }
+
+  private runAndPresentCutscene(cutsceneId: string) {
+    if (!isCutsceneId(cutsceneId)) {
+      return;
+    }
+
+    const result = runCutscene(this.currentSave, cutsceneId);
+    this.currentSave = result.save;
+    this.persistProgress();
+    this.startCutscenePresentation(result.commands);
+  }
+
+  private startCutscenePresentation(commands: readonly CutsceneCommand[]) {
+    this.activeCutsceneCommands = [...commands];
+    this.activeCutsceneCommandIndex = 0;
+    this.cutsceneWaiting = false;
+    this.presentNextCutsceneCommand();
+  }
+
+  private presentNextCutsceneCommand() {
+    while (
+      this.activeCutsceneCommandIndex < this.activeCutsceneCommands.length
+    ) {
+      const command =
+        this.activeCutsceneCommands[this.activeCutsceneCommandIndex];
+
+      if (!command) {
+        break;
+      }
+
+      if (command.type === "sound") {
+        playCutsceneSound(command.soundId);
+        this.activeCutsceneCommandIndex += 1;
+        continue;
+      }
+
+      if (command.type === "wait") {
+        this.cutsceneWaiting = true;
+        this.showDialogueText("System", "...", "");
+        this.time.delayedCall(command.ms, () => {
+          this.cutsceneWaiting = false;
+          this.activeCutsceneCommandIndex += 1;
+          this.presentNextCutsceneCommand();
+        });
+        return;
+      }
+
+      if (command.type === "say") {
+        this.startDialogue(command.dialogueId as DialogueId);
+        return;
+      }
+
+      if (command.type === "battle") {
+        this.finishCutscenePresentation();
+        if (command.battleKind === "trial" && command.trialId) {
+          this.startTrialBattle(command.trialId);
+        } else if (command.battleKind === "wild" && command.enemyBodyId) {
+          this.startWildBattle(command.enemyBodyId);
+        }
+        return;
+      }
+
+      this.activeCutsceneCommandIndex += 1;
+    }
+
+    this.finishCutscenePresentation();
+  }
+
+  private finishCutscenePresentation() {
+    this.activeCutsceneCommands = [];
+    this.activeCutsceneCommandIndex = 0;
+    this.cutsceneWaiting = false;
+    if (!this.activeDialogueId) {
+      this.hideDialogue();
     }
   }
 
@@ -971,6 +1137,15 @@ export class WorldScene extends Phaser.Scene {
           } else {
             this.moveCircleSelection(input.direction === "up" ? -1 : 1);
           }
+          return;
+        }
+
+        if (
+          this.interactionMode === "dialogue" &&
+          this.activeDialogueChoiceIds.length > 0 &&
+          (input.direction === "up" || input.direction === "down")
+        ) {
+          this.moveDialogueChoiceSelection(input.direction === "up" ? -1 : 1);
           return;
         }
 
@@ -1074,6 +1249,21 @@ function getNpcPrompt(npc: WorldNpc): string {
   }
 
   return "Talk";
+}
+
+function isCutsceneId(cutsceneId: string): cutsceneId is CutsceneId {
+  return cutsceneId in CUTSCENES;
+}
+
+function playCutsceneSound(soundId: string) {
+  const soundById: Record<string, GameSound> = {
+    signal: "confirm",
+  };
+  const sound = soundById[soundId];
+
+  if (sound) {
+    playGameSound(sound);
+  }
 }
 
 function getNpcTextureKey(npc: WorldNpc): string {

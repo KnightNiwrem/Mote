@@ -75,6 +75,7 @@ export function createInitialQuestState(): QuestState {
 export function questReducer(
   questState: QuestState,
   action: QuestAction,
+  context: QuestMigrationContext = {},
 ): QuestState {
   switch (action.type) {
     case "start":
@@ -89,10 +90,12 @@ export function questReducer(
             state: "active",
           });
         }),
+        context,
       );
     case "advance":
       return refreshAvailableQuests(
         advanceMatchingObjectives(questState, action),
+        context,
       );
     case "complete":
       return refreshAvailableQuests(
@@ -103,6 +106,7 @@ export function questReducer(
             objectiveProgress: completeAllObjectives(definition),
           }),
         ),
+        context,
       );
     case "claim-rewards":
       return refreshAvailableQuests(
@@ -121,6 +125,7 @@ export function questReducer(
             rewardsClaimed: true,
           });
         }),
+        context,
       );
     case "fail":
       return refreshAvailableQuests(
@@ -130,6 +135,7 @@ export function questReducer(
             state: "failed",
           }),
         ),
+        context,
       );
   }
 }
@@ -139,7 +145,11 @@ export function applyQuestActionToSave(
   action: QuestAction,
 ): SaveGame {
   const before = save.quests;
-  const quests = questReducer(save.quests, action);
+  const quests = questReducer(
+    save.quests,
+    action,
+    getQuestConditionContext(save),
+  );
   let nextSave: SaveGame = {
     ...save,
     quests,
@@ -160,7 +170,13 @@ export function applyQuestActionToSave(
     nextSave = applyRewardToSave(nextSave, reward);
   }
 
-  return nextSave;
+  return {
+    ...nextSave,
+    quests: refreshAvailableQuests(
+      nextSave.quests,
+      getQuestConditionContext(nextSave),
+    ),
+  };
 }
 
 export function completeQuestAndClaimRewards(
@@ -322,7 +338,9 @@ export function areQuestConditionsMet(
     return true;
   }
 
-  return conditions.every((condition) => isQuestConditionMet(save, condition));
+  return conditions.every((condition) =>
+    isQuestConditionMet(save.quests, condition, getQuestConditionContext(save)),
+  );
 }
 
 export function validateQuestState(
@@ -345,7 +363,10 @@ export function validateQuestState(
     },
   );
 
-  return refreshAvailableQuests(Object.fromEntries(entries) as QuestState);
+  return refreshAvailableQuests(
+    Object.fromEntries(entries) as QuestState,
+    context,
+  );
 }
 
 export function migrateQuestStateFromLegacy(
@@ -358,66 +379,106 @@ export function migrateQuestStateFromLegacy(
   const firstTrial = TRIALS["first-trial"];
 
   if (flags["story.luma.met"] === true) {
-    state = questReducer(state, {
-      type: "advance",
-      trigger: "garden-action",
-      objectiveId: "care-for-luma",
-      questId: MAIN_QUEST_ID,
-    });
+    state = questReducer(
+      state,
+      {
+        type: "advance",
+        trigger: "garden-action",
+        objectiveId: "care-for-luma",
+        questId: MAIN_QUEST_ID,
+      },
+      context,
+    );
   }
 
   if (flags["story.mira.met"] === true) {
-    state = questReducer(state, {
-      type: "advance",
-      trigger: "dialogue",
-      targetId: "guide-mira",
-    });
+    state = questReducer(
+      state,
+      {
+        type: "advance",
+        trigger: "dialogue",
+        targetId: "guide-mira",
+      },
+      context,
+    );
   }
 
   if (acquiredBodies.some((bodyId) => bodyId !== "glowbud")) {
-    state = questReducer(state, {
-      type: "advance",
-      trigger: "body-acquired",
-    });
+    state = questReducer(
+      state,
+      {
+        type: "advance",
+        trigger: "body-acquired",
+      },
+      context,
+    );
   }
 
   if (
     flags[firstTrial.completionFlag] === true ||
     (inventory[firstTrial.rewardInventoryKey] ?? 0) > 0
   ) {
-    state = questReducer(state, {
-      type: "start",
-      questId: TRIAL_QUEST_ID,
-    });
-    state = questReducer(state, {
-      type: "advance",
-      trigger: "trial-completed",
-      targetId: firstTrial.id,
-    });
-    state = questReducer(state, {
-      type: "complete",
-      questId: TRIAL_QUEST_ID,
-    });
-    state = questReducer(state, {
-      type: "claim-rewards",
-      questId: TRIAL_QUEST_ID,
-    });
+    state = questReducer(
+      state,
+      {
+        type: "start",
+        questId: TRIAL_QUEST_ID,
+      },
+      context,
+    );
+    state = questReducer(
+      state,
+      {
+        type: "advance",
+        trigger: "trial-completed",
+        targetId: firstTrial.id,
+      },
+      context,
+    );
+    state = questReducer(
+      state,
+      {
+        type: "complete",
+        questId: TRIAL_QUEST_ID,
+      },
+      context,
+    );
+    state = questReducer(
+      state,
+      {
+        type: "claim-rewards",
+        questId: TRIAL_QUEST_ID,
+      },
+      context,
+    );
   }
 
   if (flags[firstTrial.storyHintFlag] === "introduced") {
-    state = questReducer(state, {
-      type: "advance",
-      trigger: "sovereign-hint",
-      targetId: "sovereign-weights",
-    });
-    state = questReducer(state, {
-      type: "complete",
-      questId: MAIN_QUEST_ID,
-    });
-    state = questReducer(state, {
-      type: "claim-rewards",
-      questId: MAIN_QUEST_ID,
-    });
+    state = questReducer(
+      state,
+      {
+        type: "advance",
+        trigger: "sovereign-hint",
+        targetId: "sovereign-weights",
+      },
+      context,
+    );
+    state = questReducer(
+      state,
+      {
+        type: "complete",
+        questId: MAIN_QUEST_ID,
+      },
+      context,
+    );
+    state = questReducer(
+      state,
+      {
+        type: "claim-rewards",
+        questId: MAIN_QUEST_ID,
+      },
+      context,
+    );
   }
 
   if (
@@ -427,17 +488,25 @@ export function migrateQuestStateFromLegacy(
       "acquire-route-body",
     )
   ) {
-    state = questReducer(state, {
-      type: "complete",
-      questId: BODY_RESEARCH_QUEST_ID,
-    });
-    state = questReducer(state, {
-      type: "claim-rewards",
-      questId: BODY_RESEARCH_QUEST_ID,
-    });
+    state = questReducer(
+      state,
+      {
+        type: "complete",
+        questId: BODY_RESEARCH_QUEST_ID,
+      },
+      context,
+    );
+    state = questReducer(
+      state,
+      {
+        type: "claim-rewards",
+        questId: BODY_RESEARCH_QUEST_ID,
+      },
+      context,
+    );
   }
 
-  return state;
+  return refreshAvailableQuests(state, context);
 }
 
 function advanceMatchingObjectives(
@@ -522,14 +591,15 @@ function doesActionMatchObjective(
     return false;
   }
 
-  return (
-    !objective.targetId ||
-    !action.targetId ||
-    objective.targetId === action.targetId
-  );
+  return objective.targetId === undefined
+    ? true
+    : objective.targetId === action.targetId;
 }
 
-function refreshAvailableQuests(questState: QuestState): QuestState {
+function refreshAvailableQuests(
+  questState: QuestState,
+  context: QuestMigrationContext = {},
+): QuestState {
   let nextState = questState;
 
   for (const definition of Object.values(QUEST_DEFINITIONS)) {
@@ -539,7 +609,13 @@ function refreshAvailableQuests(questState: QuestState): QuestState {
       continue;
     }
 
-    if (areStaticQuestConditionsMet(nextState, definition.prerequisites)) {
+    if (
+      areQuestConditionsMetForState(
+        nextState,
+        definition.prerequisites,
+        context,
+      )
+    ) {
       nextState = {
         ...nextState,
         [definition.id]: withTrackedObjective(definition, {
@@ -553,37 +629,27 @@ function refreshAvailableQuests(questState: QuestState): QuestState {
   return nextState;
 }
 
-function areStaticQuestConditionsMet(
+function areQuestConditionsMetForState(
   questState: QuestState,
   conditions: readonly QuestCondition[] | undefined,
+  context: QuestMigrationContext = {},
 ): boolean {
   if (!conditions || conditions.length === 0) {
     return false;
   }
 
-  return conditions.every((condition) => {
-    if (condition.type === "quest-state") {
-      return questState[condition.questId]?.state === condition.state;
-    }
-
-    if (condition.type === "objective-complete") {
-      return isQuestObjectiveComplete(
-        questState,
-        condition.questId,
-        condition.objectiveId,
-      );
-    }
-
-    return false;
-  });
+  return conditions.every((condition) =>
+    isQuestConditionMet(questState, condition, context),
+  );
 }
 
 function isQuestConditionMet(
-  save: SaveGame,
+  questState: QuestState,
   condition: QuestCondition,
+  context: QuestMigrationContext = {},
 ): boolean {
   if (condition.type === "flag") {
-    const value = save.questFlags[condition.flag];
+    const value = context.questFlags?.[condition.flag];
 
     return condition.value === undefined
       ? Boolean(value)
@@ -591,24 +657,34 @@ function isQuestConditionMet(
   }
 
   if (condition.type === "quest-state") {
-    return save.quests[condition.questId]?.state === condition.state;
+    return questState[condition.questId]?.state === condition.state;
   }
 
   if (condition.type === "objective-complete") {
     return isQuestObjectiveComplete(
-      save.quests,
+      questState,
       condition.questId,
       condition.objectiveId,
     );
   }
 
   if (condition.type === "has-body") {
+    const acquiredBodies = context.acquiredBodies ?? [];
+
     return condition.bodyId
-      ? save.acquiredBodies.includes(condition.bodyId)
-      : save.acquiredBodies.length > 1;
+      ? acquiredBodies.includes(condition.bodyId)
+      : acquiredBodies.length > 1;
   }
 
-  return (save.inventory[condition.itemId] ?? 0) >= (condition.count ?? 1);
+  return (context.inventory?.[condition.itemId] ?? 0) >= (condition.count ?? 1);
+}
+
+function getQuestConditionContext(save: SaveGame): QuestMigrationContext {
+  return {
+    questFlags: save.questFlags,
+    acquiredBodies: save.acquiredBodies,
+    inventory: save.inventory,
+  };
 }
 
 function updateQuest(

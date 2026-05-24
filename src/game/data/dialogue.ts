@@ -161,6 +161,16 @@ export const DIALOGUES: Record<DialogueId, DialogueDefinition> = {
           {
             conditions: [
               {
+                type: "quest-state",
+                questId: TRIAL_QUEST_ID,
+                state: "completed",
+              },
+            ],
+            text: "The Garden is quiet after the mark. That signal felt heavy.",
+          },
+          {
+            conditions: [
+              {
                 type: "flag",
                 flag: "trial.first.completed",
                 value: true,
@@ -216,12 +226,32 @@ export const DIALOGUES: Record<DialogueId, DialogueDefinition> = {
           {
             conditions: [
               {
+                type: "quest-state",
+                questId: TRIAL_QUEST_ID,
+                state: "completed",
+              },
+            ],
+            text: "You cleared Cal's mark. Sovereign signals rarely arrive alone; keep the fragment close.",
+          },
+          {
+            conditions: [
+              {
                 type: "flag",
                 flag: "trial.first.completed",
                 value: true,
               },
             ],
             text: "You cleared Cal's mark. Sovereign signals rarely arrive alone; keep the fragment close.",
+          },
+          {
+            conditions: [
+              {
+                type: "objective-complete",
+                questId: MAIN_QUEST_ID,
+                objectiveId: "meet-guide-mira",
+              },
+            ],
+            text: "Route 1 is still the best teacher. Bodies show what a mind can actually carry.",
           },
           {
             conditions: [
@@ -257,6 +287,17 @@ export const DIALOGUES: Record<DialogueId, DialogueDefinition> = {
           },
         ],
         variants: [
+          {
+            conditions: [
+              {
+                type: "quest-state",
+                questId: TRIAL_QUEST_ID,
+                state: "completed",
+              },
+            ],
+            text: "Your result stands. Efficiency is not colder than care, only less forgiving.",
+            effects: [],
+          },
           {
             conditions: [
               {

@@ -66,6 +66,11 @@ export type GameRuntimeEvent =
       save: SaveGame;
     }
   | {
+      type: "open-pause-menu";
+      panel: "inventory" | "quests";
+      save: SaveGame;
+    }
+  | {
       type: "busy";
       canPause: false;
     };

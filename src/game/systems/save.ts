@@ -5,6 +5,7 @@ import {
   type WorldMapId,
 } from "@/game/data/maps";
 import { MOTE_MINDS, STARTER_MIND_ID } from "@/game/data/minds";
+import { QUEST_DEFINITIONS, type RewardDefinition } from "@/game/data/quests";
 import { TRIALS } from "@/game/data/trials";
 import { INITIAL_INVENTORY } from "@/game/systems/inventory";
 import {
@@ -18,6 +19,7 @@ import {
   setCircleSlot,
 } from "@/game/systems/moteCircle";
 import {
+  applyRewardToSave,
   createInitialQuestState,
   getCurrentObjective,
   isQuestCompleted,
@@ -156,7 +158,14 @@ export function loadSaveGame(
       return activeSlot.record.save;
     }
 
-    return getLatestValidSaveSlot(listSaveSlots(storage))?.record.save ?? null;
+    const fallbackSlot = getLatestValidSaveSlot(listSaveSlots(storage));
+
+    if (!fallbackSlot) {
+      return null;
+    }
+
+    setActiveSaveSlotId(fallbackSlot.slotId, storage);
+    return fallbackSlot.record.save;
   } catch {
     return null;
   }
@@ -377,6 +386,8 @@ export function migrateLegacyAutosave(
 }
 
 export function validateSaveGame(value: unknown): SaveGame | null {
+  const shouldRepairLegacyRewards =
+    isRecord(value) && getSaveVersion(value) < SAVE_SCHEMA_VERSION;
   const migrated = migrateSaveData(value);
 
   if (!isRecord(migrated) || migrated.version !== SAVE_SCHEMA_VERSION) {
@@ -410,7 +421,7 @@ export function validateSaveGame(value: unknown): SaveGame | null {
     return null;
   }
 
-  return {
+  const save: SaveGame = {
     version: SAVE_SCHEMA_VERSION,
     player,
     circle,
@@ -420,6 +431,8 @@ export function validateSaveGame(value: unknown): SaveGame | null {
     acquiredBodies,
     acquiredMinds: normalizeAcquiredMindIds(acquiredMinds),
   };
+
+  return shouldRepairLegacyRewards ? repairClaimedQuestRewards(save) : save;
 }
 
 export function migrateSaveData(value: unknown): unknown {
@@ -479,9 +492,68 @@ function validateSaveSlotRecord(
   return {
     version: SAVE_SLOT_SCHEMA_VERSION,
     slotId: value.slotId,
-    metadata,
+    metadata: createSaveSlotMetadata(save, metadata.updatedAt),
     save,
   };
+}
+
+function repairClaimedQuestRewards(save: SaveGame): SaveGame {
+  let nextSave = save;
+
+  for (const definition of Object.values(QUEST_DEFINITIONS)) {
+    const progress = nextSave.quests[definition.id];
+
+    if (!progress?.rewardsClaimed) {
+      continue;
+    }
+
+    for (const reward of definition.rewards) {
+      nextSave = applyMissingRewardToSave(nextSave, reward);
+    }
+  }
+
+  return nextSave;
+}
+
+function applyMissingRewardToSave(
+  save: SaveGame,
+  reward: RewardDefinition,
+): SaveGame {
+  if (reward.type === "item") {
+    const expectedCount = reward.count ?? 1;
+    const currentCount = save.inventory[reward.itemId] ?? 0;
+
+    if (currentCount >= expectedCount) {
+      return save;
+    }
+
+    return applyRewardToSave(save, {
+      ...reward,
+      count: expectedCount - currentCount,
+    });
+  }
+
+  if (reward.type === "flag") {
+    return save.questFlags[reward.flag] === reward.value
+      ? save
+      : applyRewardToSave(save, reward);
+  }
+
+  if (reward.type === "experience") {
+    const slotIndex = reward.slotIndex ?? 0;
+    const slot = save.circle[slotIndex];
+
+    if (slot?.state !== "occupied" || slot.experience >= reward.amount) {
+      return save;
+    }
+
+    return applyRewardToSave(save, {
+      ...reward,
+      amount: reward.amount - slot.experience,
+    });
+  }
+
+  return applyRewardToSave(save, reward);
 }
 
 function validateSaveSlotMetadata(

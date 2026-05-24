@@ -1,10 +1,14 @@
 import * as Phaser from "phaser";
 import { ensurePolishTextures } from "@/game/art";
-import { playGameSound, primeAudio, startMusicLoop } from "@/game/audio";
+import {
+  type GameSound,
+  playGameSound,
+  primeAudio,
+  startMusicLoop,
+} from "@/game/audio";
 import { GAME_VIEWPORT } from "@/game/config";
 import { MOTE_BODIES } from "@/game/data/bodies";
-import { SOVEREIGN_HINT_CUTSCENE_ID } from "@/game/data/cutscenes";
-import { WILD_BODY_DIALOGUE_ID } from "@/game/data/dialogue";
+import { type DialogueId, WILD_BODY_DIALOGUE_ID } from "@/game/data/dialogue";
 import type { Direction, GridPosition, WorldMapId } from "@/game/data/maps";
 import { MOTE_MOVES } from "@/game/data/moves";
 import { FIRST_TRIAL_ID, TRIALS, type TrialId } from "@/game/data/trials";
@@ -21,7 +25,7 @@ import {
   getNewlyAcquiredBodyId,
   resolveBattleTurn,
 } from "@/game/systems/battle";
-import { getCutsceneSummary } from "@/game/systems/cutscenes";
+import type { CutsceneCommand } from "@/game/systems/cutscenes";
 import {
   getDialogueDefinition,
   getDialogueView,
@@ -32,7 +36,7 @@ import {
   loadOrCreateSaveGame,
   saveGame,
 } from "@/game/systems/save";
-import { applyTrialBattleResultToSave } from "@/game/systems/trials";
+import { applyTrialBattleResult } from "@/game/systems/trials";
 import type { BattleState } from "@/game/types/battle";
 import type { OccupiedCircleSlot, SaveGame } from "@/game/types/save";
 import { fadeInScene, fadeToScene } from "./transitions";
@@ -54,6 +58,26 @@ type BattleKeys = {
   enter: Phaser.Input.Keyboard.Key;
 };
 
+type PostBattlePresentationStep =
+  | {
+      type: "message";
+      text: string;
+    }
+  | {
+      type: "sound";
+      soundId: string;
+    }
+  | {
+      type: "wait";
+      ms: number;
+    }
+  | {
+      type: "battle";
+      battleKind: "wild" | "trial";
+      enemyBodyId?: string;
+      trialId?: TrialId;
+    };
+
 const BATTLE_PANEL_COLOR = 0x101820;
 const HP_BAR_WIDTH = 70;
 
@@ -72,6 +96,9 @@ export class BattleScene extends Phaser.Scene {
   private acquiredBodyPromptId: string | null = null;
   private selectedAssignmentOption = 0;
   private postBattleMessage: string | null = null;
+  private postBattlePresentationSteps: PostBattlePresentationStep[] = [];
+  private postBattlePresentationIndex = 0;
+  private postBattlePresentationWaiting = false;
   private battleKind: "wild" | "trial" = "wild";
   private trialId: TrialId = FIRST_TRIAL_ID;
   private playerNameText: Phaser.GameObjects.Text | null = null;
@@ -99,6 +126,9 @@ export class BattleScene extends Phaser.Scene {
     this.acquiredBodyPromptId = null;
     this.selectedAssignmentOption = 0;
     this.postBattleMessage = null;
+    this.postBattlePresentationSteps = [];
+    this.postBattlePresentationIndex = 0;
+    this.postBattlePresentationWaiting = false;
     this.battleKind = data.battleKind ?? "wild";
     this.trialId = data.trialId ?? FIRST_TRIAL_ID;
     this.moveTexts = [];
@@ -146,6 +176,17 @@ export class BattleScene extends Phaser.Scene {
           this.confirmAssignmentPrompt();
         }
 
+        return;
+      }
+
+      if (this.hasPostBattlePresentation()) {
+        if (this.postBattlePresentationWaiting) {
+          return;
+        }
+
+        if (this.isActionPressed()) {
+          this.advancePostBattlePresentation();
+        }
         return;
       }
 
@@ -337,6 +378,10 @@ export class BattleScene extends Phaser.Scene {
 
     if (this.battleState.outcome === "active") {
       this.hintText?.setText("A Select");
+    } else if (this.hasPostBattlePresentation()) {
+      this.hintText?.setText(
+        this.postBattlePresentationWaiting ? "" : "A Continue",
+      );
     } else {
       this.hintText?.setText("A Return");
     }
@@ -391,22 +436,32 @@ export class BattleScene extends Phaser.Scene {
         this.battleKind === "wild"
           ? getNewlyAcquiredBodyId(this.currentSave, this.battleState)
           : null;
-      this.currentSave =
-        this.battleKind === "trial"
-          ? applyTrialBattleResultToSave(
-              this.currentSave,
-              this.battleState,
-              this.trialId,
-            )
-          : applyBattleResultToSave(this.currentSave, this.battleState);
+      if (this.battleKind === "trial") {
+        const trialResult = applyTrialBattleResult(
+          this.currentSave,
+          this.battleState,
+          this.trialId,
+        );
+        this.currentSave = trialResult.save;
+        this.postBattlePresentationSteps = createTrialResultPresentationSteps(
+          this.battleState,
+          this.trialId,
+          trialResult.commands,
+          this.currentSave,
+        );
+        this.postBattlePresentationIndex = 0;
+        this.postBattlePresentationWaiting = false;
+      } else {
+        this.currentSave = applyBattleResultToSave(
+          this.currentSave,
+          this.battleState,
+        );
+      }
       saveGame(this.currentSave);
       this.resultSaved = true;
       this.acquiredBodyPromptId = acquiredBodyId;
       this.selectedAssignmentOption = 0;
-      this.postBattleMessage =
-        this.battleKind === "trial"
-          ? getTrialResultMessage(this.battleState, this.trialId)
-          : null;
+      this.presentCurrentPostBattleStep();
       playGameSound(this.battleState.outcome === "player-win" ? "win" : "hit");
     }
 
@@ -437,6 +492,82 @@ export class BattleScene extends Phaser.Scene {
     playGameSound("confirm");
     this.acquiredBodyPromptId = null;
     this.updateBattleUi();
+  }
+
+  private hasPostBattlePresentation(): boolean {
+    return (
+      this.postBattlePresentationIndex < this.postBattlePresentationSteps.length
+    );
+  }
+
+  private presentCurrentPostBattleStep() {
+    while (this.hasPostBattlePresentation()) {
+      const step =
+        this.postBattlePresentationSteps[this.postBattlePresentationIndex];
+
+      if (!step) {
+        break;
+      }
+
+      if (step.type === "message") {
+        this.postBattleMessage = step.text;
+        this.updateBattleUi();
+        return;
+      }
+
+      if (step.type === "sound") {
+        playCutsceneSound(step.soundId);
+        this.postBattlePresentationIndex += 1;
+        continue;
+      }
+
+      if (step.type === "wait") {
+        this.postBattlePresentationWaiting = true;
+        this.hintText?.setText("");
+        this.time.delayedCall(step.ms, () => {
+          this.postBattlePresentationWaiting = false;
+          this.postBattlePresentationIndex += 1;
+          this.presentCurrentPostBattleStep();
+        });
+        return;
+      }
+
+      this.startPostBattleBattle(step);
+      return;
+    }
+
+    this.postBattleMessage = null;
+    this.updateBattleUi();
+  }
+
+  private advancePostBattlePresentation() {
+    if (!this.hasPostBattlePresentation()) {
+      return;
+    }
+
+    this.postBattlePresentationIndex += 1;
+    this.presentCurrentPostBattleStep();
+  }
+
+  private startPostBattleBattle(
+    step: Extract<
+      PostBattlePresentationStep,
+      {
+        type: "battle";
+      }
+    >,
+  ) {
+    this.postBattlePresentationSteps = [];
+    this.postBattlePresentationIndex = 0;
+    this.postBattlePresentationWaiting = false;
+    playGameSound("encounter");
+    fadeToScene(this, "Battle", {
+      returnMapId: this.returnMapId,
+      returnTile: this.returnTile,
+      battleKind: step.battleKind,
+      enemyBodyId: step.enemyBodyId,
+      trialId: step.trialId,
+    });
   }
 
   private updateAssignmentPromptUi(bodyId: string) {
@@ -605,15 +736,104 @@ function getBodyTextureKey(bodyId: string): string {
   return MOTE_BODIES[bodyId]?.spriteKey ?? "mote-glowbud";
 }
 
-function getTrialResultMessage(
+function createTrialResultPresentationSteps(
   battleState: BattleState,
   trialId: TrialId,
-): string {
+  commands: readonly CutsceneCommand[],
+  save: SaveGame,
+): PostBattlePresentationStep[] {
   const trial = TRIALS[trialId];
 
-  if (battleState.outcome === "player-win") {
-    return `${trial.victoryMessage}\n${getCutsceneSummary(SOVEREIGN_HINT_CUTSCENE_ID)}`;
+  if (battleState.outcome !== "player-win") {
+    return [
+      {
+        type: "message",
+        text: "Cal Venn: Output below threshold. Return when your Circle is sharper.",
+      },
+    ];
   }
 
-  return "Cal Venn: Output below threshold. Return when your Circle is sharper.";
+  return [
+    {
+      type: "message",
+      text: trial.victoryMessage,
+    },
+    ...commands.flatMap((command) =>
+      createCutscenePresentationSteps(command, save),
+    ),
+  ];
+}
+
+function createCutscenePresentationSteps(
+  command: CutsceneCommand,
+  save: SaveGame,
+): PostBattlePresentationStep[] {
+  if (command.type === "say") {
+    return [
+      {
+        type: "message",
+        text: getCutsceneDialogueText(command.dialogueId, save),
+      },
+    ];
+  }
+
+  if (command.type === "sound") {
+    return [
+      {
+        type: "sound",
+        soundId: command.soundId,
+      },
+    ];
+  }
+
+  if (command.type === "wait") {
+    return [
+      {
+        type: "wait",
+        ms: command.ms,
+      },
+    ];
+  }
+
+  if (command.type === "battle") {
+    return [
+      {
+        type: "battle",
+        battleKind: command.battleKind,
+        enemyBodyId: command.enemyBodyId,
+        trialId: command.trialId,
+      },
+    ];
+  }
+
+  return [];
+}
+
+function getCutsceneDialogueText(dialogueId: string, save: SaveGame): string {
+  const definition = getDialogueDefinition(dialogueId as DialogueId);
+  const view = getDialogueView(definition, definition.startNodeId, save);
+
+  if (view.type === "line") {
+    return `${view.speaker}: ${view.text}`;
+  }
+
+  if (view.type === "choice") {
+    return [
+      view.prompt,
+      ...view.choices.map((choice) => `- ${choice.label}`),
+    ].join("\n");
+  }
+
+  return "";
+}
+
+function playCutsceneSound(soundId: string) {
+  const soundById: Record<string, GameSound> = {
+    signal: "confirm",
+  };
+  const sound = soundById[soundId];
+
+  if (sound) {
+    playGameSound(sound);
+  }
 }

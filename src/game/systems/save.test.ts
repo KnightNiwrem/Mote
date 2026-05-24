@@ -1,7 +1,17 @@
 import { expect, test } from "bun:test";
+import { GUIDE_MIRA_DIALOGUE_ID } from "@/game/data/dialogue";
 import { MAIN_QUEST_ID, TRIAL_QUEST_ID } from "@/game/data/quests";
+import { FIRST_TRIAL_ID, TRIALS } from "@/game/data/trials";
+import { createTrialBattleState } from "@/game/systems/battle";
+import { getDialogueStartView } from "@/game/systems/dialogue";
 import { applyInventoryItem } from "@/game/systems/inventory";
-import { MAX_CIRCLE_SLOTS } from "@/game/systems/moteCircle";
+import {
+  getOccupiedCircleSlots,
+  MAX_CIRCLE_SLOTS,
+} from "@/game/systems/moteCircle";
+import { applyTrialBattleResultToSave } from "@/game/systems/trials";
+import type { BattleState } from "@/game/types/battle";
+import type { OccupiedCircleSlot } from "@/game/types/save";
 import {
   ACTIVE_SAVE_SLOT_STORAGE_KEY,
   createInitialSaveGame,
@@ -259,8 +269,14 @@ test("legacy autosave migrates to slot one without dropping progress fields", ()
 
   expect(slot.record.save.player).toEqual(legacySave.player);
   expect(slot.record.save.circle).toEqual(legacySave.circle);
-  expect(slot.record.save.inventory).toEqual(legacySave.inventory);
-  expect(slot.record.save.questFlags).toEqual(legacySave.questFlags);
+  expect(slot.record.save.inventory).toEqual({
+    ...legacySave.inventory,
+    "patch-pulse": 1,
+  });
+  expect(slot.record.save.questFlags).toEqual({
+    ...legacySave.questFlags,
+    "quest.main.chapterOneComplete": true,
+  });
   expect(slot.record.save.quests[TRIAL_QUEST_ID]?.state).toBe("completed");
   expect(slot.record.save.quests[MAIN_QUEST_ID]?.state).toBe("completed");
   expect(loadOrCreateSaveGame(storage)).toEqual(slot.record.save);
@@ -296,6 +312,101 @@ test("version one saves migrate quest progress from flags and persist it", () =>
   expect(parsed?.quests).toEqual(migrated?.quests);
 });
 
+test("legacy quest reward claims repair missing durable reward side effects", () => {
+  const trial = TRIALS[FIRST_TRIAL_ID];
+  const migrated = validateSaveGame({
+    version: 1,
+    player: {
+      name: "Legacy",
+      currentMapId: "optima-trial-arena",
+      position: { x: 2, y: 8 },
+    },
+    circle: createInitialSaveGame().circle,
+    inventory: {},
+    questFlags: {
+      [trial.completionFlag]: true,
+      [trial.storyHintFlag]: "introduced",
+    },
+    acquiredBodies: ["glowbud", "reedling"],
+    acquiredMinds: createInitialSaveGame().acquiredMinds,
+  });
+
+  expect(migrated?.quests[TRIAL_QUEST_ID]?.rewardsClaimed).toBe(true);
+  expect(migrated?.quests[MAIN_QUEST_ID]?.rewardsClaimed).toBe(true);
+  expect(migrated?.inventory[trial.rewardInventoryKey]).toBe(1);
+  expect(migrated?.inventory["patch-pulse"]).toBe(1);
+  expect(migrated?.questFlags["quest.main.chapterOneComplete"]).toBe(true);
+});
+
+test("legacy quest reward repair does not duplicate already present rewards", () => {
+  const trial = TRIALS[FIRST_TRIAL_ID];
+  const migrated = validateSaveGame({
+    version: 1,
+    player: {
+      name: "Legacy",
+      currentMapId: "optima-trial-arena",
+      position: { x: 2, y: 8 },
+    },
+    circle: createInitialSaveGame().circle,
+    inventory: {
+      [trial.rewardInventoryKey]: 2,
+      "patch-pulse": 4,
+    },
+    questFlags: {
+      [trial.completionFlag]: true,
+      [trial.storyHintFlag]: "introduced",
+      "quest.main.chapterOneComplete": true,
+    },
+    acquiredBodies: ["glowbud", "reedling"],
+    acquiredMinds: createInitialSaveGame().acquiredMinds,
+  });
+
+  expect(migrated?.inventory[trial.rewardInventoryKey]).toBe(2);
+  expect(migrated?.inventory["patch-pulse"]).toBe(4);
+});
+
+test("validated save slots expose metadata regenerated from migrated save data", () => {
+  const storage = new MemoryStorage();
+  const updatedAt = "2026-05-24T03:00:00.000Z";
+  const { quests: _quests, ...legacySaveWithoutQuests } =
+    createInitialSaveGame();
+  const migratedSave = validateSaveGame({
+    ...legacySaveWithoutQuests,
+    version: 1,
+    questFlags: {
+      "story.luma.met": true,
+    },
+  });
+
+  if (!migratedSave) {
+    throw new Error("Expected migrated save to validate");
+  }
+
+  storage.setItem(
+    getSaveSlotStorageKey("slot-1"),
+    JSON.stringify({
+      version: 1,
+      slotId: "slot-1",
+      metadata: createSaveSlotMetadata(createInitialSaveGame(), updatedAt),
+      save: migratedSave,
+    }),
+  );
+
+  const slot = readSaveSlot("slot-1", storage);
+
+  expect(slot.status).toBe("valid");
+
+  if (slot.status !== "valid") {
+    throw new Error("Expected slot to be valid");
+  }
+
+  expect(slot.record.metadata.updatedAt).toBe(updatedAt);
+  expect(slot.record.metadata.chapterLabel).toBe(
+    "Speak with Guide Mira near the east hedge.",
+  );
+  expect(listSaveSlots(storage)[0]).toEqual(slot);
+});
+
 test("corrupt save slots are reported without blocking other slots", () => {
   const storage = new MemoryStorage();
   const save = createInitialSaveGame();
@@ -315,6 +426,32 @@ test("corrupt save slots are reported without blocking other slots", () => {
 
   setActiveSaveSlotId("slot-2", storage);
   expect(loadOrCreateSaveGame(storage)).toEqual(save);
+  expect(getActiveSaveSlotId(storage)).toBe("slot-1");
+
+  const updatedSave = {
+    ...save,
+    player: {
+      ...save.player,
+      currentMapId: "motehaven-path" as const,
+      position: { x: 2, y: 8 },
+    },
+  };
+
+  expect(saveGame(updatedSave, storage)).toBe(true);
+  expect(readSaveSlot("slot-2", storage)).toEqual({
+    status: "corrupt",
+    slotId: "slot-2",
+  });
+
+  const fallbackSlot = readSaveSlot("slot-1", storage);
+
+  expect(fallbackSlot.status).toBe("valid");
+
+  if (fallbackSlot.status !== "valid") {
+    throw new Error("Expected fallback slot to stay valid");
+  }
+
+  expect(fallbackSlot.record.save.player.currentMapId).toBe("motehaven-path");
 });
 
 test("version zero saves migrate through the save hooks", () => {
@@ -363,3 +500,66 @@ test("inventory and Circle item effects persist through save slots", () => {
       : null,
   ).toBe(3);
 });
+
+test("generated trial completion persists and reloads through save slots", () => {
+  const storage = new MemoryStorage();
+  const trial = TRIALS[FIRST_TRIAL_ID];
+  const completedSave = applyTrialBattleResultToSave(
+    createInitialSaveGame(),
+    winFirstTrial(getStarterSlot()),
+    FIRST_TRIAL_ID,
+  );
+
+  writeSaveSlot("slot-3", completedSave, storage, "2026-05-24T04:00:00.000Z");
+
+  const reloaded = loadOrCreateSaveGame(storage);
+  const slot = readSaveSlot("slot-3", storage);
+  const mira = getDialogueStartView(GUIDE_MIRA_DIALOGUE_ID, reloaded);
+
+  expect(reloaded.questFlags[trial.completionFlag]).toBe(true);
+  expect(reloaded.questFlags[trial.storyHintFlag]).toBe("introduced");
+  expect(reloaded.inventory[trial.rewardInventoryKey]).toBe(1);
+  expect(reloaded.quests[TRIAL_QUEST_ID]?.state).toBe("completed");
+  expect(reloaded.quests[MAIN_QUEST_ID]?.state).toBe("completed");
+
+  expect(slot.status).toBe("valid");
+
+  if (slot.status !== "valid") {
+    throw new Error("Expected trial completion slot to be valid");
+  }
+
+  expect(slot.record.metadata.chapterLabel).toBe("Chapter 1 - Precision Mark");
+  expect(slot.record.metadata.trialMarks).toEqual(["Precision Mark"]);
+  expect(mira.view.type === "line" ? mira.view.text : "").toContain(
+    "Sovereign signals",
+  );
+});
+
+function getStarterSlot(): OccupiedCircleSlot {
+  const slot = getOccupiedCircleSlots(createInitialSaveGame().circle)[0];
+
+  if (!slot) {
+    throw new Error("Expected starter save to include an occupied Circle slot");
+  }
+
+  return slot;
+}
+
+function winFirstTrial(playerSlot: OccupiedCircleSlot): BattleState {
+  const state = createTrialBattleState({
+    playerSlot,
+  });
+
+  return {
+    ...state,
+    player: {
+      ...state.player,
+      currentHp: 6,
+    },
+    enemy: {
+      ...state.enemy,
+      currentHp: 0,
+    },
+    outcome: "player-win",
+  };
+}

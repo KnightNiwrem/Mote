@@ -1,7 +1,7 @@
 import { SOVEREIGN_HINT_CUTSCENE_ID } from "@/game/data/cutscenes";
 import { MAIN_QUEST_ID, TRIAL_QUEST_ID } from "@/game/data/quests";
 import { TRIALS, type TrialId } from "@/game/data/trials";
-import { runCutscene } from "@/game/systems/cutscenes";
+import { type CutsceneCommand, runCutscene } from "@/game/systems/cutscenes";
 import { updateCircleSlot } from "@/game/systems/moteCircle";
 import {
   applyQuestActionToSave,
@@ -18,11 +18,17 @@ export function isTrialCompleted(save: SaveGame, trialId: TrialId): boolean {
   );
 }
 
-export function applyTrialBattleResultToSave(
+export type TrialBattleResultApplication = {
+  save: SaveGame;
+  commands: CutsceneCommand[];
+  completedNow: boolean;
+};
+
+export function applyTrialBattleResult(
   save: SaveGame,
   battleState: BattleState,
   trialId: TrialId,
-): SaveGame {
+): TrialBattleResultApplication {
   const trial = TRIALS[trialId];
   const wonTrial = battleState.outcome === "player-win";
   const alreadyCompleted = isTrialCompleted(save, trialId);
@@ -51,7 +57,11 @@ export function applyTrialBattleResultToSave(
   };
 
   if (!wonTrial || alreadyCompleted) {
-    return nextSave;
+    return {
+      save: nextSave,
+      commands: [],
+      completedNow: false,
+    };
   }
 
   nextSave = applyQuestActionToSave(nextSave, {
@@ -64,12 +74,25 @@ export function applyTrialBattleResultToSave(
     targetId: trialId,
   });
   nextSave = completeQuestAndClaimRewards(nextSave, TRIAL_QUEST_ID);
-  nextSave = runCutscene(nextSave, SOVEREIGN_HINT_CUTSCENE_ID).save;
+  const cutsceneResult = runCutscene(nextSave, SOVEREIGN_HINT_CUTSCENE_ID);
+  nextSave = cutsceneResult.save;
   nextSave = applyQuestActionToSave(nextSave, {
     type: "advance",
     trigger: "sovereign-hint",
     targetId: "sovereign-weights",
   });
 
-  return completeQuestAndClaimRewards(nextSave, MAIN_QUEST_ID);
+  return {
+    save: completeQuestAndClaimRewards(nextSave, MAIN_QUEST_ID),
+    commands: cutsceneResult.commands,
+    completedNow: true,
+  };
+}
+
+export function applyTrialBattleResultToSave(
+  save: SaveGame,
+  battleState: BattleState,
+  trialId: TrialId,
+): SaveGame {
+  return applyTrialBattleResult(save, battleState, trialId).save;
 }

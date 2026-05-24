@@ -1,18 +1,39 @@
 import { expect, test } from "bun:test";
+import { SOVEREIGN_HINT_DIALOGUE_ID } from "@/game/data/dialogue";
 import { FIRST_TRIAL_ID, TRIALS } from "@/game/data/trials";
 import { createTrialBattleState } from "@/game/systems/battle";
 import { getOccupiedCircleSlots } from "@/game/systems/moteCircle";
 import type { BattleState } from "@/game/types/battle";
 import type { OccupiedCircleSlot } from "@/game/types/save";
 import { createInitialSaveGame } from "./save";
-import { applyTrialBattleResultToSave, isTrialCompleted } from "./trials";
+import {
+  applyTrialBattleResult,
+  applyTrialBattleResultToSave,
+  isTrialCompleted,
+} from "./trials";
 
 test("trial reward completes progression and introduces Sovereign Weights", () => {
   const save = createInitialSaveGame();
   const wonTrial = winFirstTrial(getStarterSlot());
-  const nextSave = applyTrialBattleResultToSave(save, wonTrial, FIRST_TRIAL_ID);
+  const result = applyTrialBattleResult(save, wonTrial, FIRST_TRIAL_ID);
+  const nextSave = result.save;
   const trial = TRIALS[FIRST_TRIAL_ID];
 
+  expect(result.completedNow).toBe(true);
+  expect(result.commands).toEqual([
+    {
+      type: "sound",
+      soundId: "signal",
+    },
+    {
+      type: "wait",
+      ms: 350,
+    },
+    {
+      type: "say",
+      dialogueId: SOVEREIGN_HINT_DIALOGUE_ID,
+    },
+  ]);
   expect(isTrialCompleted(nextSave, FIRST_TRIAL_ID)).toBe(true);
   expect(nextSave.questFlags[trial.storyHintFlag]).toBe("introduced");
   expect(nextSave.questFlags["trial.first.lastOutcome"]).toBe("player-win");
@@ -41,7 +62,14 @@ test("trial reward is granted only once", () => {
     wonTrial,
     FIRST_TRIAL_ID,
   );
+  const repeatedResult = applyTrialBattleResult(
+    completedSave,
+    wonTrial,
+    FIRST_TRIAL_ID,
+  );
 
+  expect(repeatedResult.completedNow).toBe(false);
+  expect(repeatedResult.commands).toEqual([]);
   expect(repeatedSave.inventory[trial.rewardInventoryKey]).toBe(1);
   expect(repeatedSave.circle[0]).toEqual(completedSave.circle[0]);
 });
@@ -64,7 +92,10 @@ test("losing a trial records the result without completing it", () => {
     lostTrial,
     FIRST_TRIAL_ID,
   );
+  const result = applyTrialBattleResult(save, lostTrial, FIRST_TRIAL_ID);
 
+  expect(result.completedNow).toBe(false);
+  expect(result.commands).toEqual([]);
   expect(isTrialCompleted(nextSave, FIRST_TRIAL_ID)).toBe(false);
   expect(nextSave.questFlags["trial.first.lastOutcome"]).toBe("enemy-win");
   expect(nextSave.inventory[TRIALS[FIRST_TRIAL_ID].rewardInventoryKey]).toBe(

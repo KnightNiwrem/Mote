@@ -123,6 +123,14 @@ export function App() {
         return;
       }
 
+      if (detail.type === "open-pause-menu") {
+        setCanPause(true);
+        setLatestSave(detail.save);
+        dispatchPause({ type: "open", canPause: true });
+        dispatchPause({ type: "activate-menu-item", itemId: detail.panel });
+        return;
+      }
+
       setCanPause(detail.canPause);
       setLatestSave(detail.save);
     };
