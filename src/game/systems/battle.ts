@@ -1,7 +1,17 @@
 import { MOTE_BODIES } from "@/game/data/bodies";
 import { BASE_MIND_ID, MOTE_MINDS } from "@/game/data/minds";
 import { MOTE_MOVES } from "@/game/data/moves";
-import { updateCircleSlot } from "@/game/systems/moteCircle";
+import { FIRST_TRIAL_ID, TRIALS, type TrialId } from "@/game/data/trials";
+import { canUnlockWildBody } from "@/game/systems/encounters";
+import {
+  calculateMindBodyStats,
+  getMindMoveModifier,
+} from "@/game/systems/mindBody";
+import {
+  addCircleSlot,
+  createCircleSlot,
+  updateCircleSlot,
+} from "@/game/systems/moteCircle";
 import type {
   BattleCombatant,
   BattleEvent,
@@ -32,9 +42,15 @@ export type CreateWildBattleStateInput = {
   enemyBodyId?: string;
 };
 
+export type CreateTrialBattleStateInput = {
+  playerSlot: OccupiedCircleSlot;
+  trialId?: TrialId;
+};
+
 const DEFAULT_WILD_BODY_ID = "reedling";
 const MAX_LOG_LINES = 4;
 const SUPPORT_SHIELD = 5;
+const BODY_INVENTORY_PREFIX = "body:";
 
 export function createWildBattleState({
   playerSlot,
@@ -57,11 +73,44 @@ export function createWildBattleState({
   const message = `${enemy.name} appeared.`;
 
   return {
+    kind: "wild",
+    enemyPolicy: "wild",
     turn: 1,
     player,
     enemy,
     outcome: "active",
     log: [message],
+  };
+}
+
+export function createTrialBattleState({
+  playerSlot,
+  trialId = FIRST_TRIAL_ID,
+}: CreateTrialBattleStateInput): BattleState {
+  const trial = TRIALS[trialId];
+  const enemyBody = getBody(trial.enemyBodyId);
+  const player = createBattleCombatant({
+    side: "player",
+    bodyId: playerSlot.bodyId,
+    mindId: playerSlot.mindId,
+    level: playerSlot.level,
+  });
+  const enemy = createBattleCombatant({
+    side: "enemy",
+    bodyId: trial.enemyBodyId,
+    mindId: trial.enemyMindId,
+    name: `${trial.rivalName}'s ${enemyBody.name}`,
+  });
+
+  return {
+    kind: "trial",
+    enemyPolicy: "optima-rival",
+    trialId,
+    turn: 1,
+    player,
+    enemy,
+    outcome: "active",
+    log: [`${trial.name} begins. Optima seeks the fastest clean line.`],
   };
 }
 
@@ -96,18 +145,7 @@ export function calculateBattleStats(
   body: MoteBody,
   mind: MoteMind,
 ): BattleStats {
-  return {
-    hp: Math.max(1, body.baseStats.hp + (mind.statModifiers.hp ?? 0)),
-    attack: Math.max(
-      1,
-      body.baseStats.attack + (mind.statModifiers.attack ?? 0),
-    ),
-    defense: Math.max(
-      1,
-      body.baseStats.defense + (mind.statModifiers.defense ?? 0),
-    ),
-    speed: Math.max(1, body.baseStats.speed + (mind.statModifiers.speed ?? 0)),
-  };
+  return calculateMindBodyStats(body, mind);
 }
 
 export function calculateDamage(
@@ -154,6 +192,42 @@ export function chooseWildEnemyMove(state: BattleState): string {
   return damageMoves[0] ?? state.enemy.moves[0] ?? "spark-tap";
 }
 
+export function chooseOptimaEnemyMove(state: BattleState): string {
+  const damageMoves = state.enemy.moves
+    .filter((moveId) => getMove(moveId).role === "damage")
+    .map((moveId) => ({
+      moveId,
+      move: getMove(moveId),
+      damage: calculateProjectedDamage(state.enemy, state.player, moveId),
+    }));
+
+  const finishingMoves = damageMoves
+    .filter(({ damage }) => damage >= state.player.currentHp)
+    .sort(
+      (left, right) =>
+        left.move.energyCost - right.move.energyCost ||
+        right.damage - left.damage ||
+        left.moveId.localeCompare(right.moveId),
+    );
+
+  if (finishingMoves[0]) {
+    return finishingMoves[0].moveId;
+  }
+
+  damageMoves.sort((left, right) => {
+    const leftEfficiency = left.damage / Math.max(1, left.move.energyCost);
+    const rightEfficiency = right.damage / Math.max(1, right.move.energyCost);
+
+    return (
+      rightEfficiency - leftEfficiency ||
+      right.damage - left.damage ||
+      left.moveId.localeCompare(right.moveId)
+    );
+  });
+
+  return damageMoves[0]?.moveId ?? state.enemy.moves[0] ?? "spark-tap";
+}
+
 export function resolveBattleTurn(
   state: BattleState,
   playerMoveId: string,
@@ -162,7 +236,7 @@ export function resolveBattleTurn(
     return { state, events: [] };
   }
 
-  const enemyMoveId = chooseWildEnemyMove(state);
+  const enemyMoveId = chooseEnemyMove(state);
   let nextState: BattleState = {
     ...state,
     turn: state.turn + 1,
@@ -203,6 +277,14 @@ export function resolveBattleTurn(
   };
 }
 
+function chooseEnemyMove(state: BattleState): string {
+  if (state.enemyPolicy === "optima-rival") {
+    return chooseOptimaEnemyMove(state);
+  }
+
+  return chooseWildEnemyMove(state);
+}
+
 export function applyBattleResultToSave(
   save: SaveGame,
   battleState: BattleState,
@@ -216,6 +298,7 @@ export function applyBattleResultToSave(
       ? save.questFlags["battle.wildWins"]
       : 0;
   const wonBattle = battleState.outcome === "player-win";
+  const acquiredBodyId = getNewlyAcquiredBodyId(save, battleState);
 
   return {
     ...save,
@@ -234,6 +317,66 @@ export function applyBattleResultToSave(
       "battle.lastOutcome": battleState.outcome,
       "battle.wildWins": wonBattle ? currentWins + 1 : currentWins,
     },
+    inventory: acquiredBodyId
+      ? incrementBodyInventory(save.inventory, acquiredBodyId)
+      : save.inventory,
+    acquiredBodies: acquiredBodyId
+      ? [...save.acquiredBodies, acquiredBodyId]
+      : save.acquiredBodies,
+  };
+}
+
+export function getNewlyAcquiredBodyId(
+  save: SaveGame,
+  battleState: BattleState,
+): string | null {
+  if (
+    battleState.outcome !== "player-win" ||
+    !canUnlockWildBody(battleState.enemy.bodyId) ||
+    save.acquiredBodies.includes(battleState.enemy.bodyId)
+  ) {
+    return null;
+  }
+
+  return battleState.enemy.bodyId;
+}
+
+export function assignAcquiredBodyToCircle(
+  save: SaveGame,
+  bodyId: string,
+): SaveGame {
+  if (!save.acquiredBodies.includes(bodyId)) {
+    throw new Error("Cannot assign a body before it is acquired");
+  }
+
+  const body = getBody(bodyId);
+
+  return {
+    ...save,
+    circle: addCircleSlot(
+      save.circle,
+      createCircleSlot({
+        bodyId,
+        mindId: BASE_MIND_ID,
+        currentHp: body.baseStats.hp,
+      }),
+    ),
+  };
+}
+
+export function getBodyInventoryKey(bodyId: string): string {
+  return `${BODY_INVENTORY_PREFIX}${bodyId}`;
+}
+
+function incrementBodyInventory(
+  inventory: SaveGame["inventory"],
+  bodyId: string,
+): SaveGame["inventory"] {
+  const inventoryKey = getBodyInventoryKey(bodyId);
+
+  return {
+    ...inventory,
+    [inventoryKey]: (inventory[inventoryKey] ?? 0) + 1,
   };
 }
 
@@ -248,7 +391,10 @@ function applyMove(
   const move = getMove(moveId);
 
   if (move.role === "recovery") {
-    const healAmount = Math.min(move.power, actor.maxHp - actor.currentHp);
+    const healAmount = Math.min(
+      move.power + getMindMoveModifier(getMind(actor.mindId), move),
+      actor.maxHp - actor.currentHp,
+    );
     const nextActor = {
       ...actor,
       currentHp: actor.currentHp + healAmount,
@@ -265,22 +411,26 @@ function applyMove(
   }
 
   if (move.role === "support") {
+    const shieldAmount =
+      SUPPORT_SHIELD + getMindMoveModifier(getMind(actor.mindId), move);
     const nextActor = {
       ...actor,
-      shield: Math.max(actor.shield, SUPPORT_SHIELD),
+      shield: Math.max(actor.shield, shieldAmount),
     };
     const message = `${actor.name} used ${move.name} and raised a guard.`;
 
     return {
       state: appendLog(updateCombatant(state, side, nextActor), message),
       events: [
-        { type: "shield", target: side, amount: SUPPORT_SHIELD },
+        { type: "shield", target: side, amount: shieldAmount },
         { type: "log", message },
       ],
     };
   }
 
-  const rawDamage = calculateDamage(actor, target, move);
+  const rawDamage =
+    calculateDamage(actor, target, move) +
+    getMindMoveModifier(getMind(actor.mindId), move);
   const damage = Math.max(1, rawDamage - target.shield);
   const nextTarget = {
     ...target,
@@ -296,6 +446,19 @@ function applyMove(
       { type: "log", message },
     ],
   };
+}
+
+function calculateProjectedDamage(
+  attacker: BattleCombatant,
+  defender: BattleCombatant,
+  moveId: string,
+): number {
+  const move = getMove(moveId);
+  const rawDamage =
+    calculateDamage(attacker, defender, move) +
+    getMindMoveModifier(getMind(attacker.mindId), move);
+
+  return Math.max(1, rawDamage - defender.shield);
 }
 
 function getBattleOutcome(state: BattleState): BattleOutcome {

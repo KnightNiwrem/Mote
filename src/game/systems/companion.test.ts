@@ -35,6 +35,13 @@ test("Garden action values are clamped to the companion range", () => {
   expect(nextState.focus).toBe(COMPANION_MAX_VALUE);
 });
 
+test("Garden actions can apply mind-driven bond gain modifiers", () => {
+  const initialState = createInitialCompanionState();
+  const nextState = applyGardenAction(initialState, "feed", 1);
+
+  expect(nextState.bond).toBe(initialState.bond + 2);
+});
+
 test("first companion dialogue changes with bond", () => {
   const state = createInitialCompanionState();
 

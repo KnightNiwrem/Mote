@@ -1,4 +1,7 @@
 import * as Phaser from "phaser";
+import { CHARACTER_TEXTURE_KEYS, ensurePolishTextures } from "@/game/art";
+import { playGameSound, primeAudio, startMusicLoop } from "@/game/audio";
+import { MOTE_BODIES } from "@/game/data/bodies";
 import {
   type Direction,
   type GridPosition,
@@ -10,6 +13,8 @@ import {
   type WorldMapId,
   type WorldNpc,
 } from "@/game/data/maps";
+import { MOTE_MINDS } from "@/game/data/minds";
+import { FIRST_TRIAL_ID, TRIALS, type TrialId } from "@/game/data/trials";
 import { GAME_CONTROL_EVENT, type GameControlInput } from "@/game/input";
 import {
   applyGardenAction,
@@ -17,8 +22,16 @@ import {
   type CompanionState,
   createInitialCompanionState,
   GARDEN_ACTIONS,
+  type GardenActionDefinition,
   getCompanionDialogue,
 } from "@/game/systems/companion";
+import { rollWildEncounter } from "@/game/systems/encounters";
+import {
+  assignMindToCircleSlot,
+  getAvailableMindIds,
+  getBondGainModifier,
+  getCircleSlotCompatibility,
+} from "@/game/systems/mindBody";
 import {
   getOccupiedCircleSlots,
   updateCircleSlot,
@@ -34,9 +47,18 @@ import {
   loadOrCreateSaveGame,
   saveGame,
 } from "@/game/systems/save";
+import { isTrialCompleted } from "@/game/systems/trials";
 import type { SaveGame } from "@/game/types/save";
+import { fadeInScene, fadeToScene } from "./transitions";
 
-type InteractionMode = "none" | "dialogue" | "garden-menu" | "garden-result";
+type InteractionMode =
+  | "none"
+  | "dialogue"
+  | "garden-menu"
+  | "garden-result"
+  | "circle-menu";
+
+type GardenMenuItem = GardenActionDefinition | { id: "circle"; label: string };
 
 type WorldSceneData = {
   mapId?: WorldMapId;
@@ -52,23 +74,49 @@ type MovementKeys = {
   enter: Phaser.Input.Keyboard.Key;
 };
 
-const TILESET_TEXTURE_KEY = "placeholder-overworld-tiles";
-const TILESET_NAME = "placeholder-overworld";
-const PLAYER_COLOR = 0xf4d35e;
+const TILESET_TEXTURE_KEY = "motehaven-overworld-tiles";
+const TILESET_NAME = "motehaven-overworld";
+const GARDEN_MENU_ITEMS: readonly GardenMenuItem[] = [
+  ...GARDEN_ACTIONS,
+  { id: "circle", label: "Circle" },
+];
 
-const tilePalette: Record<TileId, { base: string; accent: string }> = {
-  [TILE_IDS.grass]: { base: "#2f6b56", accent: "#367a61" },
-  [TILE_IDS.path]: { base: "#9b7b4f", accent: "#b7925d" },
-  [TILE_IDS.hedge]: { base: "#173f32", accent: "#25624c" },
-  [TILE_IDS.water]: { base: "#225f8f", accent: "#2f7db8" },
-  [TILE_IDS.flowers]: { base: "#356c42", accent: "#d96aa0" },
+const tilePalette: Record<
+  TileId,
+  { base: string; accent: string; highlight: string }
+> = {
+  [TILE_IDS.grass]: {
+    base: "#2f6b56",
+    accent: "#367a61",
+    highlight: "#4f8f79",
+  },
+  [TILE_IDS.path]: {
+    base: "#8d7448",
+    accent: "#b7925d",
+    highlight: "#d6b981",
+  },
+  [TILE_IDS.hedge]: {
+    base: "#173f32",
+    accent: "#25624c",
+    highlight: "#3a8064",
+  },
+  [TILE_IDS.water]: {
+    base: "#225f8f",
+    accent: "#2f7db8",
+    highlight: "#67e8f9",
+  },
+  [TILE_IDS.flowers]: {
+    base: "#356c42",
+    accent: "#d96aa0",
+    highlight: "#fde68a",
+  },
 };
 
 export class WorldScene extends Phaser.Scene {
   private cursors: Phaser.Types.Input.Keyboard.CursorKeys | null = null;
   private keys: MovementKeys | null = null;
   private worldMap: WorldMap = WORLD_MAPS.garden;
-  private player: Phaser.GameObjects.Rectangle | null = null;
+  private player: Phaser.GameObjects.Sprite | null = null;
   private playerTile: GridPosition = WORLD_MAPS.garden.start;
   private facing: Direction = "down";
   private moving = false;
@@ -81,9 +129,11 @@ export class WorldScene extends Phaser.Scene {
   private gardenMenuItems: Phaser.GameObjects.Text[] = [];
   private promptText: Phaser.GameObjects.Text | null = null;
   private selectedGardenActionIndex = 0;
+  private selectedCircleIndex = 0;
   private interactionMode: InteractionMode = "none";
   private companionState: CompanionState = createInitialCompanionState();
   private currentSave: SaveGame = createInitialSaveGame();
+  private pendingTrialId: TrialId | null = null;
 
   constructor() {
     super("World");
@@ -100,7 +150,9 @@ export class WorldScene extends Phaser.Scene {
     this.touchActionQueued = false;
     this.touchDirection = null;
     this.selectedGardenActionIndex = 0;
+    this.selectedCircleIndex = 0;
     this.interactionMode = "none";
+    this.pendingTrialId = null;
     this.companionState = this.createCompanionStateFromSave();
     this.persistProgress();
   }
@@ -108,6 +160,9 @@ export class WorldScene extends Phaser.Scene {
   create() {
     this.cameras.main.setBackgroundColor("#101820");
 
+    startMusicLoop(getMusicMode(this.worldMap.id));
+    fadeInScene(this);
+    ensurePolishTextures(this);
     this.ensureTilesetTexture();
     this.renderTilemap();
     this.renderNpcs();
@@ -124,7 +179,19 @@ export class WorldScene extends Phaser.Scene {
         return;
       }
 
+      if (this.interactionMode === "circle-menu") {
+        this.showCompanionMenu();
+        return;
+      }
+
       if (this.interactionMode !== "none") {
+        if (this.pendingTrialId) {
+          const trialId = this.pendingTrialId;
+          this.pendingTrialId = null;
+          this.startTrialBattle(trialId);
+          return;
+        }
+
         this.hideDialogue();
         return;
       }
@@ -134,7 +201,9 @@ export class WorldScene extends Phaser.Scene {
         if (npc.kind === "companion") {
           this.showCompanionMenu();
         } else if (npc.kind === "wild-mote") {
-          this.startWildBattle(npc);
+          this.startWildBattle(npc.battleBodyId ?? "reedling");
+        } else if (npc.kind === "trial-rival") {
+          this.showTrialRivalDialogue(npc);
         } else {
           this.showDialogue(npc);
         }
@@ -144,6 +213,11 @@ export class WorldScene extends Phaser.Scene {
 
     if (this.interactionMode === "garden-menu") {
       this.updateGardenMenuInput();
+      return;
+    }
+
+    if (this.interactionMode === "circle-menu") {
+      this.updateCircleMenuInput();
       return;
     }
 
@@ -179,12 +253,33 @@ export class WorldScene extends Phaser.Scene {
     for (const [rawTileId, colors] of Object.entries(tilePalette)) {
       const tileId = Number(rawTileId);
       const x = tileId * TILE_SIZE;
+      const context = texture.context;
 
-      texture.context.fillStyle = colors.base;
-      texture.context.fillRect(x, 0, TILE_SIZE, TILE_SIZE);
-      texture.context.fillStyle = colors.accent;
-      texture.context.fillRect(x + 2, 2, 3, 3);
-      texture.context.fillRect(x + 10, 9, 4, 4);
+      context.fillStyle = colors.base;
+      context.fillRect(x, 0, TILE_SIZE, TILE_SIZE);
+      context.fillStyle = colors.accent;
+      context.fillRect(x + 1, 1, 4, 2);
+      context.fillRect(x + 10, 9, 4, 3);
+      context.fillStyle = colors.highlight;
+
+      if (tileId === TILE_IDS.path) {
+        context.fillRect(x + 3, 6, 2, 1);
+        context.fillRect(x + 11, 3, 2, 1);
+        context.fillRect(x + 7, 12, 3, 1);
+      } else if (tileId === TILE_IDS.hedge) {
+        context.fillRect(x + 2, 3, 2, 2);
+        context.fillRect(x + 8, 5, 2, 2);
+        context.fillRect(x + 13, 2, 1, 3);
+      } else if (tileId === TILE_IDS.water) {
+        context.fillRect(x + 1, 5, 5, 1);
+        context.fillRect(x + 8, 11, 6, 1);
+      } else if (tileId === TILE_IDS.flowers) {
+        context.fillRect(x + 4, 5, 2, 2);
+        context.fillRect(x + 11, 10, 2, 2);
+      } else {
+        context.fillRect(x + 6, 4, 1, 3);
+        context.fillRect(x + 13, 12, 1, 2);
+      }
     }
 
     texture.refresh();
@@ -214,39 +309,22 @@ export class WorldScene extends Phaser.Scene {
   private renderNpcs() {
     for (const npc of this.worldMap.npcs) {
       const position = tileToWorldCenter(npc.position);
-      const fillColor =
-        npc.kind === "companion"
-          ? 0xe879f9
-          : npc.kind === "wild-mote"
-            ? 0xa7f3d0
-            : 0x7dd3fc;
-      const strokeColor =
-        npc.kind === "companion"
-          ? 0x4a154b
-          : npc.kind === "wild-mote"
-            ? 0x14532d
-            : 0x123047;
-
       this.add
-        .rectangle(position.x, position.y, 12, 14, fillColor)
-        .setStrokeStyle(1, strokeColor)
+        .ellipse(position.x, position.y + 7, 12, 4, 0x0d1d18, 0.35)
+        .setDepth(4);
+      this.add
+        .sprite(position.x, position.y, getNpcTextureKey(npc))
         .setDepth(5);
-
-      if (npc.kind === "companion") {
-        this.add
-          .circle(position.x + 3, position.y - 2, 2, 0xfdf4ff)
-          .setDepth(6);
-      }
     }
   }
 
   private createGardenMenu() {
     const panel = this.add
-      .rectangle(260, 72, 104, 78, 0x101820, 0.96)
+      .rectangle(260, 78, 104, 90, 0x101820, 0.96)
       .setStrokeStyle(1, 0xe879f9);
 
-    this.gardenMenuItems = GARDEN_ACTIONS.map((action, index) =>
-      this.add.text(214, 42 + index * 15, action.label, {
+    this.gardenMenuItems = GARDEN_MENU_ITEMS.map((item, index) =>
+      this.add.text(214, 42 + index * 15, item.label, {
         color: "#f8fafc",
         fontFamily: "monospace",
         fontSize: "9px",
@@ -262,7 +340,7 @@ export class WorldScene extends Phaser.Scene {
 
   private updateGardenMenuItems() {
     for (const [index, text] of this.gardenMenuItems.entries()) {
-      const action = GARDEN_ACTIONS[index];
+      const action = GARDEN_MENU_ITEMS[index];
 
       if (!action) {
         continue;
@@ -283,15 +361,23 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private moveGardenMenuSelection(delta: number) {
-    const actionCount = GARDEN_ACTIONS.length;
+    const actionCount = GARDEN_MENU_ITEMS.length;
     this.selectedGardenActionIndex =
       (this.selectedGardenActionIndex + delta + actionCount) % actionCount;
+    playGameSound("select");
     this.updateGardenMenuItems();
   }
 
-  private isMenuDirectionPressed(direction: "up" | "down"): boolean {
-    const cursor = direction === "up" ? this.cursors?.up : this.cursors?.down;
-    const key = direction === "up" ? this.keys?.w : this.keys?.s;
+  private isMenuDirectionPressed(direction: Direction): boolean {
+    const cursor = this.cursors?.[direction];
+    const keyByDirection: Record<Direction, Phaser.Input.Keyboard.Key | null> =
+      {
+        up: this.keys?.w ?? null,
+        down: this.keys?.s ?? null,
+        left: this.keys?.a ?? null,
+        right: this.keys?.d ?? null,
+      };
+    const key = keyByDirection[direction];
 
     return Boolean(
       (cursor && Phaser.Input.Keyboard.JustDown(cursor)) ||
@@ -300,23 +386,137 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private applySelectedGardenAction() {
-    const selectedAction = GARDEN_ACTIONS[this.selectedGardenActionIndex];
+    const selectedAction = GARDEN_MENU_ITEMS[this.selectedGardenActionIndex];
 
     if (!selectedAction) {
+      return;
+    }
+
+    if (selectedAction.id === "circle") {
+      playGameSound("confirm");
+      this.showCircleMenu();
       return;
     }
 
     this.companionState = applyGardenAction(
       this.companionState,
       selectedAction.id,
+      this.getActiveBondGainModifier(),
     );
     this.persistProgress();
+    playGameSound("confirm");
     this.gardenMenu?.setVisible(false);
     this.interactionMode = "garden-result";
     this.dialogueHintText?.setText("A");
     this.dialogueText?.setText(
       `${COMPANION_NAME}: ${selectedAction.message}\nBond ${this.companionState.bond}  Energy ${this.companionState.energy}`,
     );
+  }
+
+  private showCircleMenu() {
+    this.selectedCircleIndex = 0;
+    this.interactionMode = "circle-menu";
+    this.gardenMenu?.setVisible(false);
+    this.dialogueHintText?.setText("A Back");
+    this.dialogueBox?.setVisible(true);
+    this.promptText?.setVisible(false);
+    this.updateCircleMenuUi();
+  }
+
+  private updateCircleMenuInput() {
+    if (this.isMenuDirectionPressed("up")) {
+      this.moveCircleSelection(-1);
+    } else if (this.isMenuDirectionPressed("down")) {
+      this.moveCircleSelection(1);
+    } else if (this.isMenuDirectionPressed("left")) {
+      this.cycleSelectedCircleMind(-1);
+    } else if (this.isMenuDirectionPressed("right")) {
+      this.cycleSelectedCircleMind(1);
+    }
+  }
+
+  private moveCircleSelection(delta: number) {
+    const occupiedSlots = this.getManageableCircleSlots();
+
+    if (occupiedSlots.length === 0) {
+      return;
+    }
+
+    this.selectedCircleIndex =
+      (this.selectedCircleIndex + delta + occupiedSlots.length) %
+      occupiedSlots.length;
+    playGameSound("select");
+    this.updateCircleMenuUi();
+  }
+
+  private cycleSelectedCircleMind(delta: number) {
+    const occupiedSlots = this.getManageableCircleSlots();
+    const selected = occupiedSlots[this.selectedCircleIndex];
+    const availableMindIds = getAvailableMindIds(
+      this.currentSave.acquiredMinds,
+    );
+
+    if (!selected || availableMindIds.length === 0) {
+      return;
+    }
+
+    const currentMindIndex = Math.max(
+      0,
+      availableMindIds.indexOf(selected.slot.mindId),
+    );
+    const nextMindId =
+      availableMindIds[
+        (currentMindIndex + delta + availableMindIds.length) %
+          availableMindIds.length
+      ];
+
+    if (!nextMindId) {
+      return;
+    }
+
+    this.currentSave = {
+      ...this.currentSave,
+      acquiredMinds: availableMindIds,
+      circle: updateCircleSlot(
+        this.currentSave.circle,
+        selected.index,
+        (slot) =>
+          slot.state === "occupied"
+            ? assignMindToCircleSlot(slot, nextMindId)
+            : slot,
+      ),
+    };
+    saveGame(this.currentSave);
+    this.companionState = this.createCompanionStateFromSave();
+    playGameSound("select");
+    this.updateCircleMenuUi();
+  }
+
+  private updateCircleMenuUi() {
+    const occupiedSlots = this.getManageableCircleSlots();
+
+    if (occupiedSlots.length === 0) {
+      this.dialogueText?.setText("Circle is empty.");
+      return;
+    }
+
+    this.selectedCircleIndex = clamp(
+      this.selectedCircleIndex,
+      0,
+      occupiedSlots.length - 1,
+    );
+
+    const lines = occupiedSlots.slice(0, 4).map(({ slot }, index) => {
+      const body = MOTE_BODIES[slot.bodyId];
+      const mind = MOTE_MINDS[slot.mindId];
+      const marker = index === this.selectedCircleIndex ? ">" : " ";
+      const bodyName = body?.name ?? slot.bodyId;
+      const mindName = mind?.name ?? slot.mindId;
+
+      return `${marker}${bodyName}/${mindName} ${getCircleSlotCompatibility(slot)}`;
+    });
+
+    this.dialogueText?.setText(lines.join("\n"));
   }
 
   private showCompanionMenu() {
@@ -329,6 +529,7 @@ export class WorldScene extends Phaser.Scene {
     this.dialogueBox?.setVisible(true);
     this.gardenMenu?.setVisible(true);
     this.promptText?.setVisible(false);
+    playGameSound("talk");
     this.updateGardenMenuItems();
   }
 
@@ -336,8 +537,7 @@ export class WorldScene extends Phaser.Scene {
     const position = tileToWorldCenter(this.playerTile);
 
     this.player = this.add
-      .rectangle(position.x, position.y, 12, 14, PLAYER_COLOR)
-      .setStrokeStyle(1, 0x3d2f12)
+      .sprite(position.x, position.y, CHARACTER_TEXTURE_KEYS.player)
       .setDepth(10);
   }
 
@@ -447,17 +647,25 @@ export class WorldScene extends Phaser.Scene {
     const space = this.cursors?.space;
     if (this.touchActionQueued) {
       this.touchActionQueued = false;
+      primeAudio();
       return true;
     }
 
-    return Boolean(
+    const pressed = Boolean(
       (space && Phaser.Input.Keyboard.JustDown(space)) ||
         (this.keys?.e && Phaser.Input.Keyboard.JustDown(this.keys.e)) ||
         (this.keys?.enter && Phaser.Input.Keyboard.JustDown(this.keys.enter)),
     );
+
+    if (pressed) {
+      primeAudio();
+    }
+
+    return pressed;
   }
 
   private tryMove(direction: Direction) {
+    primeAudio();
     this.facing = direction;
     this.updatePrompt();
 
@@ -469,6 +677,7 @@ export class WorldScene extends Phaser.Scene {
     this.moving = true;
     this.playerTile = nextTile;
     const nextPosition = tileToWorldCenter(nextTile);
+    playGameSound("step");
 
     this.tweens.add({
       targets: this.player,
@@ -479,6 +688,10 @@ export class WorldScene extends Phaser.Scene {
       onComplete: () => {
         this.moving = false;
         if (this.handleTransition()) {
+          return;
+        }
+
+        if (this.tryStartWildEncounter()) {
           return;
         }
 
@@ -495,10 +708,22 @@ export class WorldScene extends Phaser.Scene {
       return false;
     }
 
-    this.scene.restart({
+    playGameSound("transition");
+    fadeToScene(this, "World", {
       mapId: transition.toMapId,
       playerTile: transition.toPosition,
     } satisfies WorldSceneData);
+    return true;
+  }
+
+  private tryStartWildEncounter(): boolean {
+    const encounter = rollWildEncounter(this.worldMap, this.playerTile);
+
+    if (!encounter) {
+      return false;
+    }
+
+    this.startWildBattle(encounter.bodyId);
     return true;
   }
 
@@ -510,6 +735,19 @@ export class WorldScene extends Phaser.Scene {
       ...initialState,
       bond: companionSlot?.bond ?? initialState.bond,
     };
+  }
+
+  private getActiveBondGainModifier(): number {
+    const companionSlot = getOccupiedCircleSlots(this.currentSave.circle)[0];
+    const mind = companionSlot ? MOTE_MINDS[companionSlot.mindId] : null;
+
+    return mind ? getBondGainModifier(mind) : 0;
+  }
+
+  private getManageableCircleSlots() {
+    return this.currentSave.circle.flatMap((slot, index) =>
+      slot.state === "occupied" ? [{ slot, index }] : [],
+    );
   }
 
   private persistProgress() {
@@ -543,24 +781,59 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private showDialogue(npc: WorldNpc) {
+    playGameSound("talk");
+    this.showDialogueText(npc.name, npc.dialogue[0] ?? "", "A");
+  }
+
+  private showDialogueText(speaker: string, message: string, hint: string) {
     this.interactionMode = "dialogue";
-    this.dialogueText?.setText(`${npc.name}: ${npc.dialogue[0]}`);
-    this.dialogueHintText?.setText("A");
+    this.dialogueText?.setText(
+      message.startsWith(`${speaker}:`) ? message : `${speaker}: ${message}`,
+    );
+    this.dialogueHintText?.setText(hint);
     this.dialogueBox?.setVisible(true);
     this.promptText?.setVisible(false);
   }
 
-  private startWildBattle(npc: WorldNpc) {
+  private showTrialRivalDialogue(npc: WorldNpc) {
+    const trialId = npc.trialId ?? FIRST_TRIAL_ID;
+    const trial = TRIALS[trialId];
+
+    if (isTrialCompleted(this.currentSave, trialId)) {
+      this.pendingTrialId = null;
+      this.showDialogueText(npc.name, trial.completedDialogue, "A");
+      return;
+    }
+
+    this.pendingTrialId = trialId;
+    playGameSound("talk");
+    this.showDialogueText(npc.name, trial.introDialogue, "A Challenge");
+  }
+
+  private startWildBattle(enemyBodyId: string) {
     this.persistProgress();
-    this.scene.start("Battle", {
+    playGameSound("encounter");
+    fadeToScene(this, "Battle", {
       returnMapId: this.worldMap.id,
       returnTile: this.playerTile,
-      enemyBodyId: npc.battleBodyId ?? "reedling",
+      enemyBodyId,
+    });
+  }
+
+  private startTrialBattle(trialId: TrialId) {
+    this.persistProgress();
+    playGameSound("encounter");
+    fadeToScene(this, "Battle", {
+      returnMapId: this.worldMap.id,
+      returnTile: this.playerTile,
+      battleKind: "trial",
+      trialId,
     });
   }
 
   private hideDialogue() {
     this.interactionMode = "none";
+    this.pendingTrialId = null;
     this.dialogueBox?.setVisible(false);
     this.gardenMenu?.setVisible(false);
     this.updatePrompt();
@@ -571,11 +844,25 @@ export class WorldScene extends Phaser.Scene {
 
     switch (input.type) {
       case "direction-start":
+        primeAudio();
         if (
-          this.interactionMode === "garden-menu" &&
+          (this.interactionMode === "garden-menu" ||
+            this.interactionMode === "circle-menu") &&
           (input.direction === "up" || input.direction === "down")
         ) {
-          this.moveGardenMenuSelection(input.direction === "up" ? -1 : 1);
+          if (this.interactionMode === "garden-menu") {
+            this.moveGardenMenuSelection(input.direction === "up" ? -1 : 1);
+          } else {
+            this.moveCircleSelection(input.direction === "up" ? -1 : 1);
+          }
+          return;
+        }
+
+        if (
+          this.interactionMode === "circle-menu" &&
+          (input.direction === "left" || input.direction === "right")
+        ) {
+          this.cycleSelectedCircleMind(input.direction === "left" ? -1 : 1);
           return;
         }
 
@@ -587,6 +874,7 @@ export class WorldScene extends Phaser.Scene {
         }
         break;
       case "action":
+        primeAudio();
         this.touchActionQueued = true;
         break;
     }
@@ -600,6 +888,10 @@ function tileToWorldCenter(position: GridPosition): GridPosition {
   };
 }
 
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
 function getNpcPrompt(npc: WorldNpc): string {
   if (npc.kind === "companion") {
     return "Care";
@@ -609,5 +901,33 @@ function getNpcPrompt(npc: WorldNpc): string {
     return "Battle";
   }
 
+  if (npc.kind === "trial-rival") {
+    return "Trial";
+  }
+
   return "Talk";
+}
+
+function getNpcTextureKey(npc: WorldNpc): string {
+  if (npc.kind === "companion") {
+    return "mote-glowbud";
+  }
+
+  if (npc.kind === "wild-mote" && npc.battleBodyId) {
+    return MOTE_BODIES[npc.battleBodyId]?.spriteKey ?? "mote-reedling";
+  }
+
+  if (npc.kind === "trial-rival") {
+    return CHARACTER_TEXTURE_KEYS.rival;
+  }
+
+  return CHARACTER_TEXTURE_KEYS.guide;
+}
+
+function getMusicMode(mapId: WorldMapId) {
+  if (mapId === "garden") {
+    return "garden";
+  }
+
+  return mapId === "optima-trial-arena" ? "trial" : "route";
 }

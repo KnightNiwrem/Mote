@@ -4,9 +4,14 @@ import { getOccupiedCircleSlots } from "@/game/systems/moteCircle";
 import type { OccupiedCircleSlot } from "@/game/types/save";
 import {
   applyBattleResultToSave,
+  assignAcquiredBodyToCircle,
   calculateDamage,
+  chooseOptimaEnemyMove,
   chooseWildEnemyMove,
+  createTrialBattleState,
   createWildBattleState,
+  getBodyInventoryKey,
+  getNewlyAcquiredBodyId,
   getTurnOrder,
   resolveBattleTurn,
 } from "./battle";
@@ -23,7 +28,7 @@ test("battle damage is deterministic from body, mind, and move stats", () => {
     throw new Error("Expected Spark Tap move data to exist");
   }
 
-  expect(calculateDamage(state.player, state.enemy, sparkTap)).toBe(15);
+  expect(calculateDamage(state.player, state.enemy, sparkTap)).toBe(16);
 });
 
 test("faster combatant moves first with player winning ties", () => {
@@ -56,6 +61,21 @@ test("wild enemy policy chooses the highest power damage move", () => {
   expect(chooseWildEnemyMove(state)).toBe("stone-bump");
 });
 
+test("Optima trial policy chooses efficient damage before raw power", () => {
+  const starterSlot = getStarterSlot();
+  const state = createTrialBattleState({
+    playerSlot: {
+      ...starterSlot,
+      currentHp: 1,
+    },
+  });
+
+  expect(state.enemy.name).toBe("Cal Venn's Reedling");
+  expect(state.enemy.mindId).toBe("optima-focus");
+  expect(state.player.currentHp).toBe(state.player.maxHp);
+  expect(chooseOptimaEnemyMove(state)).toBe("quick-loop");
+});
+
 test("battle reducer resolves a one-on-one win", () => {
   const state = createWildBattleState({
     playerSlot: getStarterSlot(),
@@ -65,10 +85,23 @@ test("battle reducer resolves a one-on-one win", () => {
   const secondTurn = resolveBattleTurn(firstTurn, "spark-tap").state;
 
   expect(firstTurn.outcome).toBe("active");
-  expect(firstTurn.enemy.currentHp).toBe(5);
+  expect(firstTurn.enemy.currentHp).toBe(4);
   expect(secondTurn.outcome).toBe("player-win");
   expect(secondTurn.enemy.currentHp).toBe(0);
-  expect(secondTurn.player.currentHp).toBe(2);
+  expect(secondTurn.player.currentHp).toBe(4);
+});
+
+test("starter can complete the first Trial battle with direct attacks", () => {
+  const state = createTrialBattleState({
+    playerSlot: getStarterSlot(),
+  });
+  const firstTurn = resolveBattleTurn(state, "spark-tap").state;
+  const secondTurn = resolveBattleTurn(firstTurn, "spark-tap").state;
+
+  expect(firstTurn.outcome).toBe("active");
+  expect(firstTurn.enemy.currentHp).toBe(6);
+  expect(secondTurn.outcome).toBe("player-win");
+  expect(secondTurn.player.currentHp).toBe(3);
 });
 
 test("battle result updates saved HP, experience, and battle flags", () => {
@@ -90,11 +123,43 @@ test("battle result updates saved HP, experience, and battle flags", () => {
     level: 1,
     experience: 5,
     bond: 2,
-    currentHp: 2,
+    currentHp: 4,
   });
   expect(nextSave.questFlags["battle.lastEnemy"]).toBe("reedling");
   expect(nextSave.questFlags["battle.lastOutcome"]).toBe("player-win");
   expect(nextSave.questFlags["battle.wildWins"]).toBe(1);
+  expect(nextSave.acquiredBodies).toEqual(["glowbud", "reedling"]);
+  expect(nextSave.inventory[getBodyInventoryKey("reedling")]).toBe(1);
+});
+
+test("wild battle rewards only newly acquired bodies", () => {
+  const save = createInitialSaveGame();
+  const wonBattle = winBattleAgainst("stonelet");
+  const nextSave = applyBattleResultToSave(save, wonBattle);
+  const repeatedSave = applyBattleResultToSave(nextSave, wonBattle);
+
+  expect(getNewlyAcquiredBodyId(save, wonBattle)).toBe("stonelet");
+  expect(getNewlyAcquiredBodyId(nextSave, wonBattle)).toBeNull();
+  expect(repeatedSave.acquiredBodies).toEqual(["glowbud", "stonelet"]);
+  expect(repeatedSave.inventory[getBodyInventoryKey("stonelet")]).toBe(1);
+});
+
+test("acquired bodies can be assigned to the Circle with the base mind", () => {
+  const save = applyBattleResultToSave(
+    createInitialSaveGame(),
+    winBattleAgainst("driftcap"),
+  );
+  const nextSave = assignAcquiredBodyToCircle(save, "driftcap");
+
+  expect(nextSave.circle[1]).toEqual({
+    state: "occupied",
+    bodyId: "driftcap",
+    mindId: "base-mind",
+    level: 1,
+    experience: 0,
+    bond: 0,
+    currentHp: 22,
+  });
 });
 
 function getStarterSlot(): OccupiedCircleSlot {
@@ -105,4 +170,20 @@ function getStarterSlot(): OccupiedCircleSlot {
   }
 
   return slot;
+}
+
+function winBattleAgainst(enemyBodyId: string) {
+  const state = createWildBattleState({
+    playerSlot: getStarterSlot(),
+    enemyBodyId,
+  });
+
+  return {
+    ...state,
+    enemy: {
+      ...state.enemy,
+      currentHp: 0,
+    },
+    outcome: "player-win" as const,
+  };
 }

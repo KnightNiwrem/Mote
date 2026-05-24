@@ -1,3 +1,6 @@
+import type { EncounterTableId } from "@/game/data/encounters";
+import type { TrialId } from "@/game/data/trials";
+
 export const TILE_SIZE = 16;
 
 export const TILE_IDS = {
@@ -15,15 +18,16 @@ export type GridPosition = {
   y: number;
 };
 
-export type WorldMapId = "garden" | "motehaven-path";
+export type WorldMapId = "garden" | "motehaven-path" | "optima-trial-arena";
 
 export type WorldNpc = {
   id: string;
   name: string;
-  kind?: "npc" | "companion" | "wild-mote";
+  kind?: "npc" | "companion" | "wild-mote" | "trial-rival";
   position: GridPosition;
   dialogue: string[];
   battleBodyId?: string;
+  trialId?: TrialId;
 };
 
 export type MapTransition = {
@@ -31,6 +35,15 @@ export type MapTransition = {
   position: GridPosition;
   toMapId: WorldMapId;
   toPosition: GridPosition;
+};
+
+export type EncounterZone = {
+  id: string;
+  origin: GridPosition;
+  width: number;
+  height: number;
+  tableId: EncounterTableId;
+  stepChance: number;
 };
 
 export type WorldMap = {
@@ -43,6 +56,7 @@ export type WorldMap = {
   blockedTiles: readonly TileId[];
   npcs: readonly WorldNpc[];
   transitions: readonly MapTransition[];
+  encounterZones: readonly EncounterZone[];
 };
 
 const tileByMark: Record<string, TileId> = {
@@ -97,6 +111,25 @@ const motehavenPathRows = [
   "########################",
 ] as const;
 
+const optimaTrialArenaRows = [
+  "########################",
+  "#..........##..........#",
+  "#..****....##....****..#",
+  "#......................#",
+  "#....================..#",
+  "#....=..............=..#",
+  "#....=..............=..#",
+  "#....=..............=..#",
+  "#=...=..............=..#",
+  "#....=..............=..#",
+  "#....=..............=..#",
+  "#....================..#",
+  "#......................#",
+  "#..****..........****..#",
+  "#......................#",
+  "########################",
+] as const;
+
 export const WORLD_MAPS: Record<WorldMapId, WorldMap> = {
   garden: {
     id: "garden",
@@ -131,6 +164,7 @@ export const WORLD_MAPS: Record<WorldMapId, WorldMap> = {
         toPosition: { x: 2, y: 8 },
       },
     ],
+    encounterZones: [],
   },
   "motehaven-path": {
     id: "motehaven-path",
@@ -157,6 +191,58 @@ export const WORLD_MAPS: Record<WorldMapId, WorldMap> = {
         toMapId: "garden",
         toPosition: { x: 21, y: 8 },
       },
+      {
+        id: "path-east-trial-gate",
+        position: { x: 22, y: 8 },
+        toMapId: "optima-trial-arena",
+        toPosition: { x: 2, y: 8 },
+      },
     ],
+    encounterZones: [
+      {
+        id: "path-west-meadow",
+        origin: { x: 2, y: 3 },
+        width: 8,
+        height: 3,
+        tableId: "motehaven-route-1",
+        stepChance: 0.16,
+      },
+      {
+        id: "path-east-meadow",
+        origin: { x: 13, y: 10 },
+        width: 8,
+        height: 3,
+        tableId: "motehaven-route-1",
+        stepChance: 0.16,
+      },
+    ],
+  },
+  "optima-trial-arena": {
+    id: "optima-trial-arena",
+    name: "Optima Trial Arena",
+    width: 24,
+    height: 16,
+    start: { x: 2, y: 8 },
+    tiles: rowsToTiles(optimaTrialArenaRows),
+    blockedTiles: [TILE_IDS.hedge, TILE_IDS.water, TILE_IDS.flowers],
+    npcs: [
+      {
+        id: "optima-rival-cal",
+        name: "Cal Venn",
+        kind: "trial-rival",
+        position: { x: 11, y: 7 },
+        dialogue: [],
+        trialId: "first-trial",
+      },
+    ],
+    transitions: [
+      {
+        id: "trial-west-gate",
+        position: { x: 1, y: 8 },
+        toMapId: "motehaven-path",
+        toPosition: { x: 21, y: 8 },
+      },
+    ],
+    encounterZones: [],
   },
 };

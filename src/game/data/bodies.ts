@@ -35,7 +35,7 @@ export const MOTE_BODIES: Record<string, MoteBody> = {
     traits: ["nimble", "garden", "wild"],
     learnset: ["quick-loop", "root-jab"],
     growthCurve: "early",
-    compatibleMindTags: ["efficient", "curious", "speed"],
+    compatibleMindTags: ["efficient", "curious", "speed", "precise"],
   },
   stonelet: {
     id: "stonelet",
@@ -52,5 +52,21 @@ export const MOTE_BODIES: Record<string, MoteBody> = {
     learnset: ["stone-bump", "guard-pulse"],
     growthCurve: "late",
     compatibleMindTags: ["reliable", "steady", "defense"],
+  },
+  driftcap: {
+    id: "driftcap",
+    name: "Driftcap",
+    species: "Route Mote",
+    spriteKey: "mote-driftcap",
+    baseStats: {
+      hp: 22,
+      attack: 6,
+      defense: 7,
+      speed: 8,
+    },
+    traits: ["curious", "spore", "wild"],
+    learnset: ["root-jab", "soft-reset"],
+    growthCurve: "erratic",
+    compatibleMindTags: ["curious", "care", "steady"],
   },
 };

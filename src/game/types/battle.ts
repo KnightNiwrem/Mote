@@ -2,6 +2,8 @@ import type { BattleStats } from "@/game/types/game";
 
 export type BattleSide = "player" | "enemy";
 export type BattleOutcome = "active" | "player-win" | "enemy-win";
+export type BattleKind = "wild" | "trial";
+export type EnemyBattlePolicy = "wild" | "optima-rival";
 
 export type BattleCombatant = {
   side: BattleSide;
@@ -17,6 +19,9 @@ export type BattleCombatant = {
 };
 
 export type BattleState = {
+  kind: BattleKind;
+  enemyPolicy: EnemyBattlePolicy;
+  trialId?: string;
   turn: number;
   player: BattleCombatant;
   enemy: BattleCombatant;

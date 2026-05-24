@@ -72,11 +72,16 @@ export function getGardenAction(
 export function applyGardenAction(
   state: CompanionState,
   actionId: GardenAction,
+  bondGainModifier = 0,
 ): CompanionState {
   const action = getGardenAction(actionId);
+  const bondDelta =
+    action.delta.bond === undefined
+      ? undefined
+      : action.delta.bond + bondGainModifier;
 
   return {
-    bond: applyDelta(state.bond, action.delta.bond),
+    bond: applyDelta(state.bond, bondDelta),
     energy: applyDelta(state.energy, action.delta.energy),
     fullness: applyDelta(state.fullness, action.delta.fullness),
     joy: applyDelta(state.joy, action.delta.joy),

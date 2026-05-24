@@ -43,7 +43,12 @@ test("save serialization preserves player progress fields", () => {
     currentHp: 24,
   });
   expect(parsed?.acquiredBodies).toEqual(["glowbud"]);
-  expect(parsed?.acquiredMinds).toEqual(["base-mind", "luma-companion"]);
+  expect(parsed?.acquiredMinds).toEqual([
+    "base-mind",
+    "luma-companion",
+    "optima-focus",
+    "northstar-base",
+  ]);
   expect(parsed?.inventory).toEqual({});
   expect(parsed?.questFlags).toEqual({});
 });
@@ -103,5 +108,10 @@ test("version zero saves migrate through the save hooks", () => {
 
   expect(migrated?.version).toBe(1);
   expect(migrated?.acquiredBodies).toEqual(["glowbud"]);
-  expect(migrated?.acquiredMinds).toEqual(["base-mind", "luma-companion"]);
+  expect(migrated?.acquiredMinds).toEqual([
+    "base-mind",
+    "luma-companion",
+    "optima-focus",
+    "northstar-base",
+  ]);
 });

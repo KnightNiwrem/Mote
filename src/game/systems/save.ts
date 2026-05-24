@@ -4,7 +4,11 @@ import {
   WORLD_MAPS,
   type WorldMapId,
 } from "@/game/data/maps";
-import { BASE_MIND_ID, MOTE_MINDS, STARTER_MIND_ID } from "@/game/data/minds";
+import { MOTE_MINDS, STARTER_MIND_ID } from "@/game/data/minds";
+import {
+  INITIAL_ACQUIRED_MIND_IDS,
+  normalizeAcquiredMindIds,
+} from "@/game/systems/mindBody";
 import {
   createCircleSlot,
   createEmptyCircle,
@@ -36,8 +40,8 @@ const SAVE_MIGRATIONS: Partial<Record<number, SaveMigration>> = {
       ? save.acquiredBodies
       : [STARTER_BODY_ID],
     acquiredMinds: Array.isArray(save.acquiredMinds)
-      ? save.acquiredMinds
-      : [BASE_MIND_ID, STARTER_MIND_ID],
+      ? normalizeAcquiredMindIds(save.acquiredMinds.filter(isString))
+      : [...INITIAL_ACQUIRED_MIND_IDS],
   }),
 };
 
@@ -53,7 +57,7 @@ export function createInitialSaveGame(): SaveGame {
     inventory: {},
     questFlags: {},
     acquiredBodies: [STARTER_BODY_ID],
-    acquiredMinds: [BASE_MIND_ID, STARTER_MIND_ID],
+    acquiredMinds: [...INITIAL_ACQUIRED_MIND_IDS],
   };
 }
 
@@ -175,7 +179,7 @@ export function validateSaveGame(value: unknown): SaveGame | null {
     inventory,
     questFlags,
     acquiredBodies,
-    acquiredMinds,
+    acquiredMinds: normalizeAcquiredMindIds(acquiredMinds),
   };
 }
 
@@ -388,6 +392,10 @@ function validateGridPosition(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string";
 }
 
 function isPositiveInteger(value: unknown): value is number {

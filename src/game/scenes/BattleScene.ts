@@ -1,11 +1,18 @@
 import * as Phaser from "phaser";
+import { ensurePolishTextures } from "@/game/art";
+import { playGameSound, primeAudio, startMusicLoop } from "@/game/audio";
 import { GAME_VIEWPORT } from "@/game/config";
+import { MOTE_BODIES } from "@/game/data/bodies";
 import type { Direction, GridPosition, WorldMapId } from "@/game/data/maps";
 import { MOTE_MOVES } from "@/game/data/moves";
+import { FIRST_TRIAL_ID, TRIALS, type TrialId } from "@/game/data/trials";
 import { GAME_CONTROL_EVENT, type GameControlInput } from "@/game/input";
 import {
   applyBattleResultToSave,
+  assignAcquiredBodyToCircle,
+  createTrialBattleState,
   createWildBattleState,
+  getNewlyAcquiredBodyId,
   resolveBattleTurn,
 } from "@/game/systems/battle";
 import { getOccupiedCircleSlots } from "@/game/systems/moteCircle";
@@ -14,13 +21,17 @@ import {
   loadOrCreateSaveGame,
   saveGame,
 } from "@/game/systems/save";
+import { applyTrialBattleResultToSave } from "@/game/systems/trials";
 import type { BattleState } from "@/game/types/battle";
 import type { OccupiedCircleSlot, SaveGame } from "@/game/types/save";
+import { fadeInScene, fadeToScene } from "./transitions";
 
 type BattleSceneData = {
   returnMapId?: WorldMapId;
   returnTile?: GridPosition;
   enemyBodyId?: string;
+  battleKind?: "wild" | "trial";
+  trialId?: TrialId;
 };
 
 type BattleKeys = {
@@ -33,8 +44,6 @@ type BattleKeys = {
 };
 
 const BATTLE_PANEL_COLOR = 0x101820;
-const PLAYER_COLOR = 0xf4d35e;
-const ENEMY_COLOR = 0xa7f3d0;
 const HP_BAR_WIDTH = 70;
 
 export class BattleScene extends Phaser.Scene {
@@ -49,6 +58,11 @@ export class BattleScene extends Phaser.Scene {
   private touchActionQueued = false;
   private queuedMenuDirection: Direction | null = null;
   private resultSaved = false;
+  private acquiredBodyPromptId: string | null = null;
+  private selectedAssignmentOption = 0;
+  private postBattleMessage: string | null = null;
+  private battleKind: "wild" | "trial" = "wild";
+  private trialId: TrialId = FIRST_TRIAL_ID;
   private playerNameText: Phaser.GameObjects.Text | null = null;
   private enemyNameText: Phaser.GameObjects.Text | null = null;
   private playerHpText: Phaser.GameObjects.Text | null = null;
@@ -71,17 +85,32 @@ export class BattleScene extends Phaser.Scene {
     this.touchActionQueued = false;
     this.queuedMenuDirection = null;
     this.resultSaved = false;
+    this.acquiredBodyPromptId = null;
+    this.selectedAssignmentOption = 0;
+    this.postBattleMessage = null;
+    this.battleKind = data.battleKind ?? "wild";
+    this.trialId = data.trialId ?? FIRST_TRIAL_ID;
     this.moveTexts = [];
 
-    this.battleState = createWildBattleState({
-      playerSlot: getFirstBattleSlot(this.currentSave),
-      enemyBodyId: data.enemyBodyId,
-    });
+    const playerSlot = getFirstBattleSlot(this.currentSave);
+    this.battleState =
+      this.battleKind === "trial"
+        ? createTrialBattleState({
+            playerSlot,
+            trialId: this.trialId,
+          })
+        : createWildBattleState({
+            playerSlot,
+            enemyBodyId: data.enemyBodyId,
+          });
     this.playerMoveIds = this.battleState.player.moves.slice(0, 4);
   }
 
   create() {
     this.cameras.main.setBackgroundColor("#183329");
+    ensurePolishTextures(this);
+    startMusicLoop(this.battleKind === "trial" ? "trial" : "battle");
+    fadeInScene(this);
     this.createControls();
     this.createBackdrop();
     this.createCombatants();
@@ -95,6 +124,19 @@ export class BattleScene extends Phaser.Scene {
     }
 
     if (this.battleState.outcome !== "active") {
+      if (this.acquiredBodyPromptId) {
+        const direction = this.consumeMenuDirection();
+        if (direction) {
+          this.moveAssignmentSelection(direction);
+        }
+
+        if (this.isActionPressed()) {
+          this.confirmAssignmentPrompt();
+        }
+
+        return;
+      }
+
       if (this.isActionPressed()) {
         this.returnToWorld();
       }
@@ -132,13 +174,19 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private createCombatants() {
+    if (!this.battleState) {
+      return;
+    }
+
+    this.add.ellipse(224, 64, 34, 8, 0x0d1d18, 0.35).setDepth(1);
     this.add
-      .rectangle(224, 54, 30, 22, ENEMY_COLOR)
-      .setStrokeStyle(1, 0x14532d)
+      .sprite(224, 52, getBodyTextureKey(this.battleState.enemy.bodyId))
+      .setScale(1.35)
       .setDepth(2);
+    this.add.ellipse(80, 102, 34, 8, 0x0d1d18, 0.35).setDepth(1);
     this.add
-      .rectangle(80, 92, 30, 24, PLAYER_COLOR)
-      .setStrokeStyle(1, 0x3d2f12)
+      .sprite(80, 90, getBodyTextureKey(this.battleState.player.bodyId))
+      .setScale(1.45)
       .setDepth(2);
   }
 
@@ -253,12 +301,25 @@ export class BattleScene extends Phaser.Scene {
     this.playerHpFill?.setDisplaySize(getHpBarWidth(player), 5);
     this.logText?.setText(this.battleState.log.slice(-2).join("\n"));
 
+    if (this.acquiredBodyPromptId) {
+      this.updateAssignmentPromptUi(this.acquiredBodyPromptId);
+      return;
+    }
+
+    if (this.postBattleMessage) {
+      this.logText?.setText(this.postBattleMessage);
+    }
+
     for (const [index, text] of this.moveTexts.entries()) {
       const moveId = this.playerMoveIds[index];
       const move = moveId ? MOTE_MOVES[moveId] : null;
       const marker = index === this.selectedMoveIndex ? ">" : " ";
 
-      text.setText(move ? `${marker} ${move.name}` : "");
+      text.setText(
+        move && this.battleState.outcome === "active"
+          ? `${marker} ${move.name}`
+          : "",
+      );
       text.setColor(index === this.selectedMoveIndex ? "#f5d0fe" : "#f8fafc");
     }
 
@@ -284,8 +345,19 @@ export class BattleScene extends Phaser.Scene {
 
     if (nextIndex !== this.selectedMoveIndex) {
       this.selectedMoveIndex = nextIndex;
+      playGameSound("select");
       this.updateBattleUi();
     }
+  }
+
+  private moveAssignmentSelection(direction: Direction) {
+    if (direction !== "left" && direction !== "right") {
+      return;
+    }
+
+    this.selectedAssignmentOption = this.selectedAssignmentOption === 0 ? 1 : 0;
+    playGameSound("select");
+    this.updateBattleUi();
   }
 
   private selectMove() {
@@ -300,17 +372,80 @@ export class BattleScene extends Phaser.Scene {
 
     const result = resolveBattleTurn(this.battleState, moveId);
     this.battleState = result.state;
+    playGameSound("hit");
 
     if (this.battleState.outcome !== "active" && !this.resultSaved) {
-      this.currentSave = applyBattleResultToSave(
-        this.currentSave,
-        this.battleState,
-      );
+      const acquiredBodyId =
+        this.battleKind === "wild"
+          ? getNewlyAcquiredBodyId(this.currentSave, this.battleState)
+          : null;
+      this.currentSave =
+        this.battleKind === "trial"
+          ? applyTrialBattleResultToSave(
+              this.currentSave,
+              this.battleState,
+              this.trialId,
+            )
+          : applyBattleResultToSave(this.currentSave, this.battleState);
       saveGame(this.currentSave);
       this.resultSaved = true;
+      this.acquiredBodyPromptId = acquiredBodyId;
+      this.selectedAssignmentOption = 0;
+      this.postBattleMessage =
+        this.battleKind === "trial"
+          ? getTrialResultMessage(this.battleState, this.trialId)
+          : null;
+      playGameSound(this.battleState.outcome === "player-win" ? "win" : "hit");
     }
 
     this.updateBattleUi();
+  }
+
+  private confirmAssignmentPrompt() {
+    const bodyId = this.acquiredBodyPromptId;
+
+    if (!bodyId) {
+      return;
+    }
+
+    const bodyName = getBodyName(bodyId);
+
+    if (this.selectedAssignmentOption === 0) {
+      try {
+        this.currentSave = assignAcquiredBodyToCircle(this.currentSave, bodyId);
+        saveGame(this.currentSave);
+        this.postBattleMessage = `${bodyName} joined the Circle with a Base Mind.`;
+      } catch {
+        this.postBattleMessage = `${bodyName} is saved in body inventory.`;
+      }
+    } else {
+      this.postBattleMessage = `${bodyName} is saved in body inventory.`;
+    }
+
+    playGameSound("confirm");
+    this.acquiredBodyPromptId = null;
+    this.updateBattleUi();
+  }
+
+  private updateAssignmentPromptUi(bodyId: string) {
+    this.logText?.setText(
+      `New body acquired: ${getBodyName(bodyId)}.\nAssign to Circle?`,
+    );
+    this.hintText?.setText("A Confirm");
+
+    for (const [index, text] of this.moveTexts.entries()) {
+      if (index > 1) {
+        text.setText("");
+        continue;
+      }
+
+      const label = index === 0 ? "Assign" : "Keep";
+      const marker = index === this.selectedAssignmentOption ? ">" : " ";
+      text.setText(`${marker} ${label}`);
+      text.setColor(
+        index === this.selectedAssignmentOption ? "#f5d0fe" : "#f8fafc",
+      );
+    }
   }
 
   private consumeMenuDirection(): Direction | null {
@@ -361,18 +496,26 @@ export class BattleScene extends Phaser.Scene {
     const space = this.cursors?.space;
     if (this.touchActionQueued) {
       this.touchActionQueued = false;
+      primeAudio();
       return true;
     }
 
-    return Boolean(
+    const pressed = Boolean(
       (space && Phaser.Input.Keyboard.JustDown(space)) ||
         (this.keys?.e && Phaser.Input.Keyboard.JustDown(this.keys.e)) ||
         (this.keys?.enter && Phaser.Input.Keyboard.JustDown(this.keys.enter)),
     );
+
+    if (pressed) {
+      primeAudio();
+    }
+
+    return pressed;
   }
 
   private returnToWorld() {
-    this.scene.start("World", {
+    playGameSound("transition");
+    fadeToScene(this, "World", {
       mapId: this.returnMapId,
       playerTile: this.returnTile,
     });
@@ -388,6 +531,7 @@ export class BattleScene extends Phaser.Scene {
       case "direction-end":
         break;
       case "action":
+        primeAudio();
         this.touchActionQueued = true;
         break;
     }
@@ -424,4 +568,25 @@ function getHpBarWidth(combatant: {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function getBodyName(bodyId: string): string {
+  return MOTE_BODIES[bodyId]?.name ?? bodyId;
+}
+
+function getBodyTextureKey(bodyId: string): string {
+  return MOTE_BODIES[bodyId]?.spriteKey ?? "mote-glowbud";
+}
+
+function getTrialResultMessage(
+  battleState: BattleState,
+  trialId: TrialId,
+): string {
+  const trial = TRIALS[trialId];
+
+  if (battleState.outcome === "player-win") {
+    return `${trial.victoryMessage}\n${trial.sovereignHint}`;
+  }
+
+  return "Cal Venn: Output below threshold. Return when your Circle is sharper.";
 }
