@@ -14,9 +14,9 @@ Production-ready for this project means:
 - Content is authored and paced, not only hardcoded as one-off scene behavior.
 - Placeholder assets are coherent, readable, replaceable, and good enough for playtesting.
 
-## Current Phase 8 Assessment
+## Phase 8 Baseline And Current Progress
 
-The current build proves useful foundations:
+The Phase 8 assessment recorded the prototype foundation that existed before the recovery phases:
 
 - Phaser mounts through React.
 - The player can move on tile maps.
@@ -28,18 +28,18 @@ The current build proves useful foundations:
 - Save data persists map, position, Circle, inventory keys, acquired bodies, acquired minds, and quest flags.
 - Core rules have Bun tests.
 
-However, the result still feels subpar because the requirements allowed a technical loop to pass without the surrounding RPG structure. The current game lacks several load-bearing features:
+At Phase 8, the result still felt subpar because the requirements allowed a technical loop to pass without the surrounding RPG structure. The historical Phase 8 gap list included title flow, pause, player-facing inventory, quest journal and typed objectives, authored story spine, explicit save-slot UX, richer battle commands, reusable dialogue/cutscene/menu/quest/content systems, and a clear first-chapter definition of done.
 
-- No title screen with continue/load/options.
-- No pause menu.
-- No player-facing inventory.
-- No quest log or typed quest objectives.
-- No authored story spine beyond isolated dialogue lines.
-- No explicit save-slot UX.
-- No battle commands beyond move selection.
-- No item use, switching, run command, status, or reward screen cadence.
-- No reusable dialogue, cutscene, menu, quest, or content pipeline.
-- No clear first-chapter end-to-end definition of done.
+By the end of Phase 11, the repo has recovered the shell and story foundations that were explicitly targeted by Phases 9-11:
+
+- Title flow, continue/load/options, save slots, manual save, migration, and corrupt/empty slot handling.
+- Pause menu and shared menu model for the recovered player-facing surfaces.
+- Player-facing inventory, item categories, item feedback, persistence, and Circle management through the normal menu flow.
+- Typed quest definitions, visible objectives, quest journal, quest progress persistence, and data-driven Trial/Sovereign story events.
+- Dialogue graph and cutscene foundations with state-gated critical-path content.
+- Validation after Phase 11 passes `bun run check`, `bun run typecheck`, `bun run test`, and `bun run build`; the current suite reports 108 passing tests.
+
+The remaining gaps should be read as future work, not active Phase 8 misses: the Phase 12 content pipeline and validation suite are still open, and richer Phase 13+ battle command work remains open for switching, item/run behavior, status, rewards, and post-battle cadence. The first production chapter is not complete until those later requirements and release QA are satisfied.
 
 The revised requirements below correct that gap.
 

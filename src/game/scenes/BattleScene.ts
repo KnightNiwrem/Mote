@@ -8,7 +8,11 @@ import {
 } from "@/game/audio";
 import { GAME_VIEWPORT } from "@/game/config";
 import { MOTE_BODIES } from "@/game/data/bodies";
-import { type DialogueId, WILD_BODY_DIALOGUE_ID } from "@/game/data/dialogue";
+import {
+  type DialogueChoice,
+  type DialogueId,
+  WILD_BODY_DIALOGUE_ID,
+} from "@/game/data/dialogue";
 import type { Direction, GridPosition, WorldMapId } from "@/game/data/maps";
 import { MOTE_MOVES } from "@/game/data/moves";
 import { FIRST_TRIAL_ID, TRIALS, type TrialId } from "@/game/data/trials";
@@ -30,6 +34,7 @@ import {
   getDialogueDefinition,
   getDialogueView,
 } from "@/game/systems/dialogue";
+import { createMenuModel, menuReducer } from "@/game/systems/menu";
 import { getOccupiedCircleSlots } from "@/game/systems/moteCircle";
 import {
   createInitialSaveGame,
@@ -94,6 +99,7 @@ export class BattleScene extends Phaser.Scene {
   private queuedMenuDirection: Direction | null = null;
   private resultSaved = false;
   private acquiredBodyPromptId: string | null = null;
+  private assignmentChoices: DialogueChoice[] = [];
   private selectedAssignmentOption = 0;
   private postBattleMessage: string | null = null;
   private postBattlePresentationSteps: PostBattlePresentationStep[] = [];
@@ -124,6 +130,7 @@ export class BattleScene extends Phaser.Scene {
     this.queuedMenuDirection = null;
     this.resultSaved = false;
     this.acquiredBodyPromptId = null;
+    this.assignmentChoices = [];
     this.selectedAssignmentOption = 0;
     this.postBattleMessage = null;
     this.postBattlePresentationSteps = [];
@@ -388,17 +395,18 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private moveSelection(direction: Direction) {
-    const deltaByDirection: Record<Direction, number> = {
-      up: -2,
-      down: 2,
-      left: -1,
-      right: 1,
-    };
-    const nextIndex = clamp(
-      this.selectedMoveIndex + deltaByDirection[direction],
-      0,
-      this.playerMoveIds.length - 1,
-    );
+    const nextIndex = menuReducer(
+      createMenuModel({
+        id: "battle",
+        items: this.playerMoveIds.map((moveId) => ({
+          id: moveId,
+          label: MOTE_MOVES[moveId]?.name ?? moveId,
+        })),
+        selectedIndex: this.selectedMoveIndex,
+        columns: 2,
+      }),
+      { type: direction },
+    ).model.selectedIndex;
 
     if (nextIndex !== this.selectedMoveIndex) {
       this.selectedMoveIndex = nextIndex;
@@ -408,11 +416,28 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private moveAssignmentSelection(direction: Direction) {
-    if (direction !== "left" && direction !== "right") {
+    if (this.assignmentChoices.length === 0) {
       return;
     }
 
-    this.selectedAssignmentOption = this.selectedAssignmentOption === 0 ? 1 : 0;
+    const nextIndex = menuReducer(
+      createMenuModel({
+        id: "battle",
+        items: this.assignmentChoices.map((choice) => ({
+          id: choice.id,
+          label: choice.label,
+        })),
+        selectedIndex: this.selectedAssignmentOption,
+        columns: 2,
+      }),
+      { type: direction },
+    ).model.selectedIndex;
+
+    if (nextIndex === this.selectedAssignmentOption) {
+      return;
+    }
+
+    this.selectedAssignmentOption = nextIndex;
     playGameSound("select");
     this.updateBattleUi();
   }
@@ -460,6 +485,9 @@ export class BattleScene extends Phaser.Scene {
       saveGame(this.currentSave);
       this.resultSaved = true;
       this.acquiredBodyPromptId = acquiredBodyId;
+      this.assignmentChoices = acquiredBodyId
+        ? getWildBodyAssignmentPrompt(this.currentSave, acquiredBodyId).choices
+        : [];
       this.selectedAssignmentOption = 0;
       this.presentCurrentPostBattleStep();
       playGameSound(this.battleState.outcome === "player-win" ? "win" : "hit");
@@ -477,7 +505,10 @@ export class BattleScene extends Phaser.Scene {
 
     const bodyName = getBodyName(bodyId);
 
-    if (this.selectedAssignmentOption === 0) {
+    const selectedChoiceId =
+      this.assignmentChoices[this.selectedAssignmentOption]?.id;
+
+    if (selectedChoiceId === "assign") {
       try {
         this.currentSave = assignAcquiredBodyToCircle(this.currentSave, bodyId);
         saveGame(this.currentSave);
@@ -491,6 +522,7 @@ export class BattleScene extends Phaser.Scene {
 
     playGameSound("confirm");
     this.acquiredBodyPromptId = null;
+    this.assignmentChoices = [];
     this.updateBattleUi();
   }
 
@@ -571,32 +603,27 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private updateAssignmentPromptUi(bodyId: string) {
-    const definition = getDialogueDefinition(WILD_BODY_DIALOGUE_ID);
-    const view = getDialogueView(
-      definition,
-      definition.startNodeId,
-      this.currentSave,
-      {
-        bodyName: getBodyName(bodyId),
-      },
+    const prompt = getWildBodyAssignmentPrompt(this.currentSave, bodyId);
+    this.assignmentChoices = prompt.choices;
+    this.selectedAssignmentOption = clamp(
+      this.selectedAssignmentOption,
+      0,
+      Math.max(0, this.assignmentChoices.length - 1),
     );
 
-    this.logText?.setText(
-      view.type === "line"
-        ? `${view.text}\nAssign this body?`
-        : `New body acquired: ${getBodyName(bodyId)}.\nAssign this body?`,
-    );
+    this.logText?.setText(`${prompt.message}\n${prompt.prompt}`);
     this.hintText?.setText("A Confirm");
 
     for (const [index, text] of this.moveTexts.entries()) {
-      if (index > 1) {
+      const choice = this.assignmentChoices[index];
+
+      if (!choice) {
         text.setText("");
         continue;
       }
 
-      const label = index === 0 ? "Assign" : "Keep";
       const marker = index === this.selectedAssignmentOption ? ">" : " ";
-      text.setText(`${marker} ${label}`);
+      text.setText(`${marker} ${choice.label}`);
       text.setColor(
         index === this.selectedAssignmentOption ? "#f5d0fe" : "#f8fafc",
       );
@@ -734,6 +761,35 @@ function getBodyName(bodyId: string): string {
 
 function getBodyTextureKey(bodyId: string): string {
   return MOTE_BODIES[bodyId]?.spriteKey ?? "mote-glowbud";
+}
+
+function getWildBodyAssignmentPrompt(
+  save: SaveGame,
+  bodyId: string,
+): { message: string; prompt: string; choices: DialogueChoice[] } {
+  const definition = getDialogueDefinition(WILD_BODY_DIALOGUE_ID);
+  const variables = { bodyName: getBodyName(bodyId) };
+  const startNode = definition.nodes[definition.startNodeId];
+  const startView = getDialogueView(
+    definition,
+    definition.startNodeId,
+    save,
+    variables,
+  );
+  const choiceNodeId =
+    startNode?.type === "line" && startNode.next
+      ? startNode.next
+      : definition.startNodeId;
+  const choiceView = getDialogueView(definition, choiceNodeId, save, variables);
+
+  return {
+    message:
+      startView.type === "line"
+        ? startView.text
+        : `New body acquired: ${getBodyName(bodyId)}.`,
+    prompt: choiceView.type === "choice" ? choiceView.prompt : "",
+    choices: choiceView.type === "choice" ? choiceView.choices : [],
+  };
 }
 
 function createTrialResultPresentationSteps(

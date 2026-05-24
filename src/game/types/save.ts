@@ -17,6 +17,15 @@ export type OccupiedCircleSlot = Extract<CircleSlot, { state: "occupied" }>;
 
 export type QuestFlagValue = boolean | number | string;
 
+export type CompanionSaveState = {
+  bond: number;
+  energy: number;
+  fullness: number;
+  joy: number;
+  focus: number;
+  lastAction: "rest" | "feed" | "play" | "train" | null;
+};
+
 export type SaveGame = {
   version: number;
   player: {
@@ -28,6 +37,7 @@ export type SaveGame = {
   inventory: Record<string, number>;
   questFlags: Record<string, QuestFlagValue>;
   quests: QuestState;
+  companion: CompanionSaveState;
   acquiredBodies: string[];
   acquiredMinds: string[];
 };

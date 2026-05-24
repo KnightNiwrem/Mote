@@ -28,6 +28,10 @@ import {
   type GameControlInput,
 } from "@/game/input";
 import {
+  createCircleMenuRows,
+  getCircleAssignableMindOptions,
+} from "@/game/systems/circleMenu";
+import {
   applyGardenAction,
   COMPANION_NAME,
   type CompanionState,
@@ -46,10 +50,14 @@ import {
 } from "@/game/systems/dialogue";
 import { rollWildEncounter } from "@/game/systems/encounters";
 import {
+  createMenuModel,
+  type MenuId,
+  type MenuItem,
+  menuReducer,
+} from "@/game/systems/menu";
+import {
   assignMindToCircleSlot,
-  getAvailableMindIds,
   getBondGainModifier,
-  getCircleSlotCompatibility,
 } from "@/game/systems/mindBody";
 import {
   getOccupiedCircleSlots,
@@ -142,6 +150,7 @@ export class WorldScene extends Phaser.Scene {
   private touchActionQueued = false;
   private touchDirection: Direction | null = null;
   private dialogueBox: Phaser.GameObjects.Container | null = null;
+  private dialoguePanel: Phaser.GameObjects.Rectangle | null = null;
   private dialogueText: Phaser.GameObjects.Text | null = null;
   private dialogueHintText: Phaser.GameObjects.Text | null = null;
   private gardenMenu: Phaser.GameObjects.Container | null = null;
@@ -418,14 +427,18 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private moveDialogueChoiceSelection(delta: number) {
-    const choiceCount = this.activeDialogueChoiceIds.length;
+    const selectedIndex = moveMenuIndex(
+      "garden",
+      this.activeDialogueChoiceIds.map((id) => ({ id, label: id })),
+      this.selectedDialogueChoiceIndex,
+      delta,
+    );
 
-    if (choiceCount === 0) {
+    if (selectedIndex === this.selectedDialogueChoiceIndex) {
       return;
     }
 
-    this.selectedDialogueChoiceIndex =
-      (this.selectedDialogueChoiceIndex + delta + choiceCount) % choiceCount;
+    this.selectedDialogueChoiceIndex = selectedIndex;
     playGameSound("select");
 
     if (this.activeDialogueView?.type === "choice") {
@@ -434,9 +447,21 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private moveGardenMenuSelection(delta: number) {
-    const actionCount = GARDEN_MENU_ITEMS.length;
-    this.selectedGardenActionIndex =
-      (this.selectedGardenActionIndex + delta + actionCount) % actionCount;
+    const selectedIndex = moveMenuIndex(
+      "garden",
+      GARDEN_MENU_ITEMS.map((item) => ({
+        id: item.id,
+        label: item.label,
+      })),
+      this.selectedGardenActionIndex,
+      delta,
+    );
+
+    if (selectedIndex === this.selectedGardenActionIndex) {
+      return;
+    }
+
+    this.selectedGardenActionIndex = selectedIndex;
     playGameSound("select");
     this.updateGardenMenuItems();
   }
@@ -500,6 +525,7 @@ export class WorldScene extends Phaser.Scene {
     this.selectedCircleIndex = 0;
     this.interactionMode = "circle-menu";
     this.gardenMenu?.setVisible(false);
+    this.setDialogueLayout("circle");
     this.dialogueHintText?.setText("A Back");
     this.dialogueBox?.setVisible(true);
     this.promptText?.setVisible(false);
@@ -521,13 +547,21 @@ export class WorldScene extends Phaser.Scene {
   private moveCircleSelection(delta: number) {
     const occupiedSlots = this.getManageableCircleSlots();
 
-    if (occupiedSlots.length === 0) {
+    const selectedIndex = moveMenuIndex(
+      "circle",
+      occupiedSlots.map(({ index, slot }) => ({
+        id: String(index),
+        label: slot.bodyId,
+      })),
+      this.selectedCircleIndex,
+      delta,
+    );
+
+    if (selectedIndex === this.selectedCircleIndex) {
       return;
     }
 
-    this.selectedCircleIndex =
-      (this.selectedCircleIndex + delta + occupiedSlots.length) %
-      occupiedSlots.length;
+    this.selectedCircleIndex = selectedIndex;
     playGameSound("select");
     this.updateCircleMenuUi();
   }
@@ -535,9 +569,9 @@ export class WorldScene extends Phaser.Scene {
   private cycleSelectedCircleMind(delta: number) {
     const occupiedSlots = this.getManageableCircleSlots();
     const selected = occupiedSlots[this.selectedCircleIndex];
-    const availableMindIds = getAvailableMindIds(
-      this.currentSave.acquiredMinds,
-    );
+    const availableMindIds = getCircleAssignableMindOptions(
+      this.currentSave,
+    ).map(({ mindId }) => mindId);
 
     if (!selected || availableMindIds.length === 0) {
       return;
@@ -569,8 +603,8 @@ export class WorldScene extends Phaser.Scene {
             : slot,
       ),
     };
-    saveGame(this.currentSave);
     this.companionState = this.createCompanionStateFromSave();
+    this.persistProgress();
     playGameSound("select");
     this.updateCircleMenuUi();
   }
@@ -589,20 +623,29 @@ export class WorldScene extends Phaser.Scene {
       occupiedSlots.length - 1,
     );
 
-    const lines = occupiedSlots.slice(0, 4).map(({ slot }, index) => {
-      const body = MOTE_BODIES[slot.bodyId];
-      const mind = MOTE_MINDS[slot.mindId];
-      const marker = index === this.selectedCircleIndex ? ">" : " ";
-      const bodyName = body?.name ?? slot.bodyId;
-      const mindName = mind?.name ?? slot.mindId;
+    const selectedSlotIndex = occupiedSlots[this.selectedCircleIndex]?.index;
+    const lines = createCircleMenuRows(this.currentSave).map((row) => {
+      const marker = row.index === selectedSlotIndex ? ">" : " ";
 
-      return `${marker}${bodyName}/${mindName} ${getCircleSlotCompatibility(slot)}`;
+      if (row.state === "empty") {
+        return `${marker}${row.index + 1} Empty`;
+      }
+
+      return [
+        `${marker}${row.index + 1}`,
+        `${row.bodyName}/${row.mindName}`,
+        `L${row.level}`,
+        `HP${row.currentHp}/${row.maxHp}`,
+        `B${row.bond}`,
+        row.compatibility,
+      ].join(" ");
     });
 
     this.dialogueText?.setText(lines.join("\n"));
   }
 
   private showCompanionMenu() {
+    this.setDialogueLayout("normal");
     this.selectedGardenActionIndex = 0;
     this.interactionMode = "garden-menu";
     this.dialogueText?.setText(
@@ -673,6 +716,7 @@ export class WorldScene extends Phaser.Scene {
     const box = this.add
       .rectangle(160, 148, 300, 48, 0x101820, 0.94)
       .setStrokeStyle(1, 0x7dd3fc);
+    this.dialoguePanel = box;
     this.dialogueText = this.add.text(22, 130, "", {
       color: "#f8fafc",
       fontFamily: "monospace",
@@ -812,12 +856,11 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private createCompanionStateFromSave(): CompanionState {
-    const initialState = createInitialCompanionState();
     const companionSlot = getOccupiedCircleSlots(this.currentSave.circle)[0];
 
     return {
-      ...initialState,
-      bond: companionSlot?.bond ?? initialState.bond,
+      ...this.currentSave.companion,
+      bond: companionSlot?.bond ?? this.currentSave.companion.bond,
     };
   }
 
@@ -842,6 +885,7 @@ export class WorldScene extends Phaser.Scene {
         currentMapId: this.worldMap.id,
         position: this.playerTile,
       },
+      companion: this.companionState,
       circle: updateCircleSlot(this.currentSave.circle, 0, (slot) =>
         slot.state === "occupied"
           ? { ...slot, bond: this.companionState.bond }
@@ -959,6 +1003,7 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private showDialogueText(speaker: string, message: string, hint: string) {
+    this.setDialogueLayout("normal");
     this.interactionMode = "dialogue";
     this.dialogueText?.setText(
       message.startsWith(`${speaker}:`) ? message : `${speaker}: ${message}`,
@@ -1185,6 +1230,21 @@ export class WorldScene extends Phaser.Scene {
       this.currentSave.player.currentMapId,
       this.currentSave.player.position.x,
       this.currentSave.player.position.y,
+      this.currentSave.circle
+        .map((slot, index) =>
+          slot.state === "occupied"
+            ? `${index}:${slot.bodyId}:${slot.mindId}:${slot.currentHp}:${slot.bond}:${slot.level}:${slot.experience}`
+            : `${index}:empty`,
+        )
+        .join(","),
+      [
+        this.currentSave.companion.bond,
+        this.currentSave.companion.energy,
+        this.currentSave.companion.fullness,
+        this.currentSave.companion.joy,
+        this.currentSave.companion.focus,
+        this.currentSave.companion.lastAction ?? "",
+      ].join(","),
       this.currentSave.acquiredBodies.join(","),
       this.currentSave.acquiredMinds.join(","),
       Object.entries(this.currentSave.inventory)
@@ -1222,6 +1282,25 @@ export class WorldScene extends Phaser.Scene {
       canPause: false,
     });
   }
+
+  private setDialogueLayout(layout: "normal" | "circle") {
+    if (layout === "circle") {
+      this.dialoguePanel?.setPosition(160, 105);
+      this.dialoguePanel?.setDisplaySize(300, 106);
+      this.dialogueText?.setPosition(22, 56);
+      this.dialogueText?.setFontSize(8);
+      this.dialogueText?.setLineSpacing(1);
+      this.dialogueHintText?.setPosition(250, 154);
+      return;
+    }
+
+    this.dialoguePanel?.setPosition(160, 148);
+    this.dialoguePanel?.setDisplaySize(300, 48);
+    this.dialogueText?.setPosition(22, 130);
+    this.dialogueText?.setFontSize(9);
+    this.dialogueText?.setLineSpacing(3);
+    this.dialogueHintText?.setPosition(250, 166);
+  }
 }
 
 function tileToWorldCenter(position: GridPosition): GridPosition {
@@ -1233,6 +1312,28 @@ function tileToWorldCenter(position: GridPosition): GridPosition {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function moveMenuIndex(
+  menuId: MenuId,
+  items: readonly MenuItem[],
+  selectedIndex: number,
+  delta: number,
+): number {
+  if (items.length === 0) {
+    return selectedIndex;
+  }
+
+  const result = menuReducer(
+    createMenuModel({
+      id: menuId,
+      items: [...items],
+      selectedIndex,
+    }),
+    { type: delta < 0 ? "up" : "down" },
+  );
+
+  return result.model.selectedIndex;
 }
 
 function getNpcPrompt(npc: WorldNpc): string {

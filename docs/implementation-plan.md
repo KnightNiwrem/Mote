@@ -20,9 +20,9 @@ Each phase must satisfy these rules before it can close:
 - Placeholder assets are named, integrated, consistently styled, and replaceable through the asset/content pipeline.
 - The phase adds at least one player-facing end-to-end slice. Scaffolding alone is not enough.
 
-## Current Baseline
+## Historical Phase 8 Baseline And Current Status
 
-The existing implementation includes:
+The Phase 8 assessment recorded the prototype baseline that existed before the recovery phases. That historical baseline included:
 
 - React and Phaser mount lifecycle.
 - Boot, World, and Battle scenes.
@@ -44,25 +44,23 @@ The existing implementation includes:
 - localStorage save/load with schema validation.
 - Bun tests for several core systems.
 
-Known limitations:
+End-of-Phase-11 status:
 
-- No real title flow.
-- No save slot selection.
-- No pause menu.
-- No player-facing inventory.
-- No quest log.
-- No typed quest definitions.
-- No dialogue or cutscene system.
-- No shared menu model.
-- No item use.
-- No battle switch, item, or run commands.
-- No production map or asset pipeline.
-- No content validation suite.
-- No automated browser smoke tests.
+- Phase 9 recovered the RPG shell: title flow, save slot selection, pause menu, options, manual save, continue/load, and migration from the Phase 8 autosave.
+- Phase 10 recovered the shared menu spine, player-facing inventory, item use feedback, and Circle management through normal pause/menu flow.
+- Phase 11 recovered typed quest definitions, quest journal visibility, dialogue graph/cutscene foundations, state-gated story content, Trial/Sovereign quest events, and save/load persistence for the new progression state.
+- Validation after Phase 11 passes `bun run check`, `bun run typecheck`, `bun run test`, and `bun run build`; the current test suite reports 108 passing tests.
+
+Known limitations after Phase 11:
+
+- The production content pipeline and content validation suite remain future Phase 12 work.
+- Richer battle command depth remains future Phase 13+ work, including the full Fight/Mote/Item/Run command surface where appropriate, switching behavior, run restrictions, status, reward cadence, and deeper progression rules.
+- First-chapter production presentation, authored content breadth, balance, release QA, and later chapter hooks remain future work.
+- Automated browser smoke coverage is still not available in this environment; runtime coverage must distinguish browser smoke from pure/system and domain-level path coverage.
 
 ## Golden Path
 
-Use this path as the baseline regression route until the first production chapter replaces it:
+Use this path as the baseline regression route until the first production chapter replaces it. At end of Phase 11, pure/system tests and domain-level golden path coverage exercise title/save/pause/inventory/Circle/quests/dialogue, Trial completion, the Sovereign hook, and reload where applicable. This is not the same as completed in-app browser smoke coverage.
 
 1. Start a new game.
 2. Perform one Garden action with Luma.

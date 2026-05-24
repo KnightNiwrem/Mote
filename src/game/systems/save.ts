@@ -7,6 +7,10 @@ import {
 import { MOTE_MINDS, STARTER_MIND_ID } from "@/game/data/minds";
 import { QUEST_DEFINITIONS, type RewardDefinition } from "@/game/data/quests";
 import { TRIALS } from "@/game/data/trials";
+import {
+  COMPANION_MAX_VALUE,
+  createInitialCompanionState,
+} from "@/game/systems/companion";
 import { INITIAL_INVENTORY } from "@/game/systems/inventory";
 import {
   INITIAL_ACQUIRED_MIND_IDS,
@@ -28,6 +32,7 @@ import {
 } from "@/game/systems/quests";
 import type {
   CircleSlot,
+  CompanionSaveState,
   QuestFlagValue,
   SaveGame,
   SaveSlotId,
@@ -36,7 +41,7 @@ import type {
   SaveSlotState,
 } from "@/game/types/save";
 
-export const SAVE_SCHEMA_VERSION = 2;
+export const SAVE_SCHEMA_VERSION = 3;
 export const SAVE_STORAGE_KEY = "mote:save";
 export const SAVE_SLOT_SCHEMA_VERSION = 1;
 export const SAVE_SLOT_STORAGE_KEY_PREFIX = "mote:save-slot:";
@@ -68,7 +73,7 @@ const SAVE_MIGRATIONS: Partial<Record<number, SaveMigration>> = {
   }),
   1: (save) => ({
     ...save,
-    version: SAVE_SCHEMA_VERSION,
+    version: 2,
     quests: isRecord(save.quests)
       ? save.quests
       : migrateQuestStateFromLegacy({
@@ -82,6 +87,11 @@ const SAVE_MIGRATIONS: Partial<Record<number, SaveMigration>> = {
             ? (validateInventory(save.inventory) ?? undefined)
             : undefined,
         }),
+  }),
+  2: (save) => ({
+    ...save,
+    version: SAVE_SCHEMA_VERSION,
+    companion: migrateCompanionState(save.companion, save.circle),
   }),
 };
 
@@ -97,6 +107,7 @@ export function createInitialSaveGame(): SaveGame {
     inventory: { ...INITIAL_INVENTORY },
     questFlags: {},
     quests: createInitialQuestState(),
+    companion: createInitialCompanionState(),
     acquiredBodies: [STARTER_BODY_ID],
     acquiredMinds: [...INITIAL_ACQUIRED_MIND_IDS],
   };
@@ -403,6 +414,7 @@ export function validateSaveGame(value: unknown): SaveGame | null {
     MOTE_BODIES,
   );
   const acquiredMinds = validateKnownIdList(migrated.acquiredMinds, MOTE_MINDS);
+  const companion = validateCompanionState(migrated.companion);
   const quests = validateQuestState(migrated.quests, {
     questFlags: questFlags ?? undefined,
     acquiredBodies: acquiredBodies ?? undefined,
@@ -415,6 +427,7 @@ export function validateSaveGame(value: unknown): SaveGame | null {
     !inventory ||
     !questFlags ||
     !quests ||
+    !companion ||
     !acquiredBodies ||
     !acquiredMinds
   ) {
@@ -428,6 +441,7 @@ export function validateSaveGame(value: unknown): SaveGame | null {
     inventory,
     questFlags,
     quests,
+    companion,
     acquiredBodies,
     acquiredMinds: normalizeAcquiredMindIds(acquiredMinds),
   };
@@ -729,6 +743,52 @@ function validateCircleSlot(value: unknown): CircleSlot | null {
   };
 }
 
+function migrateCompanionState(
+  value: unknown,
+  circle: unknown,
+): CompanionSaveState {
+  const validState = validateCompanionState(value);
+
+  if (validState) {
+    return validState;
+  }
+
+  const initialState = createInitialCompanionState();
+  const validCircle = validateCircle(circle);
+  const companionSlot = validCircle?.find((slot) => slot.state === "occupied");
+
+  return {
+    ...initialState,
+    bond:
+      companionSlot?.state === "occupied"
+        ? companionSlot.bond
+        : initialState.bond,
+  };
+}
+
+function validateCompanionState(value: unknown): CompanionSaveState | null {
+  if (
+    !isRecord(value) ||
+    !isIntegerInRange(value.bond, 0, COMPANION_MAX_VALUE) ||
+    !isIntegerInRange(value.energy, 0, COMPANION_MAX_VALUE) ||
+    !isIntegerInRange(value.fullness, 0, COMPANION_MAX_VALUE) ||
+    !isIntegerInRange(value.joy, 0, COMPANION_MAX_VALUE) ||
+    !isIntegerInRange(value.focus, 0, COMPANION_MAX_VALUE) ||
+    !isCompanionAction(value.lastAction)
+  ) {
+    return null;
+  }
+
+  return {
+    bond: value.bond,
+    energy: value.energy,
+    fullness: value.fullness,
+    joy: value.joy,
+    focus: value.focus,
+    lastAction: value.lastAction,
+  };
+}
+
 function validateInventory(value: unknown): Record<string, number> | null {
   if (!isRecord(value)) {
     return null;
@@ -829,6 +889,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isString(value: unknown): value is string {
   return typeof value === "string";
+}
+
+function isCompanionAction(
+  value: unknown,
+): value is CompanionSaveState["lastAction"] {
+  return (
+    value === null ||
+    value === "rest" ||
+    value === "feed" ||
+    value === "play" ||
+    value === "train"
+  );
 }
 
 function isPositiveInteger(value: unknown): value is number {

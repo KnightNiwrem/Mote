@@ -77,6 +77,14 @@ test("save serialization preserves player progress fields", () => {
     "key:garden-pass": 1,
     "patch-pulse": 2,
   });
+  expect(parsed?.companion).toEqual({
+    bond: 2,
+    energy: 6,
+    fullness: 5,
+    joy: 4,
+    focus: 3,
+    lastAction: null,
+  });
   expect(parsed?.questFlags).toEqual({});
   expect(parsed?.quests[MAIN_QUEST_ID]?.state).toBe("active");
   expect(parsed?.quests[MAIN_QUEST_ID]?.trackedObjectiveId).toBe(
@@ -99,6 +107,12 @@ test("invalid save data is rejected safely", () => {
     validateSaveGame({
       ...save,
       circle: [...save.circle, { state: "empty" }],
+    }),
+  ).toBeNull();
+  expect(
+    validateSaveGame({
+      ...save,
+      companion: { ...save.companion, energy: 99 },
     }),
   ).toBeNull();
 });
@@ -303,7 +317,7 @@ test("version one saves migrate quest progress from flags and persist it", () =>
   };
   const migrated = validateSaveGame(versionOneSave);
 
-  expect(migrated?.version).toBe(2);
+  expect(migrated?.version).toBe(3);
   expect(migrated?.quests[TRIAL_QUEST_ID]?.state).toBe("completed");
   expect(migrated?.quests[MAIN_QUEST_ID]?.state).toBe("completed");
 
@@ -467,7 +481,15 @@ test("version zero saves migrate through the save hooks", () => {
     questFlags: {},
   });
 
-  expect(migrated?.version).toBe(2);
+  expect(migrated?.version).toBe(3);
+  expect(migrated?.companion).toEqual({
+    bond: 2,
+    energy: 6,
+    fullness: 5,
+    joy: 4,
+    focus: 3,
+    lastAction: null,
+  });
   expect(migrated?.acquiredBodies).toEqual(["glowbud"]);
   expect(migrated?.quests[MAIN_QUEST_ID]?.state).toBe("active");
   expect(migrated?.acquiredMinds).toEqual([
@@ -476,6 +498,53 @@ test("version zero saves migrate through the save hooks", () => {
     "optima-focus",
     "northstar-base",
   ]);
+});
+
+test("version two saves migrate companion state from Circle bond", () => {
+  const legacySave = {
+    ...createInitialSaveGame(),
+    version: 2,
+    companion: undefined,
+    circle: createInitialSaveGame().circle.map((slot, index) =>
+      index === 0 && slot.state === "occupied" ? { ...slot, bond: 7 } : slot,
+    ),
+  };
+
+  const migrated = validateSaveGame(legacySave);
+
+  expect(migrated?.version).toBe(3);
+  expect(migrated?.companion).toEqual({
+    bond: 7,
+    energy: 6,
+    fullness: 5,
+    joy: 4,
+    focus: 3,
+    lastAction: null,
+  });
+});
+
+test("companion state beyond bond persists through save slots", () => {
+  const storage = new MemoryStorage();
+  const save = {
+    ...createInitialSaveGame(),
+    companion: {
+      bond: 6,
+      energy: 2,
+      fullness: 9,
+      joy: 8,
+      focus: 7,
+      lastAction: "train" as const,
+    },
+  };
+
+  writeSaveSlot("slot-1", save, storage, "2026-05-24T02:30:00.000Z");
+
+  const slot = readSaveSlot("slot-1", storage);
+
+  expect(slot.status).toBe("valid");
+  expect(slot.status === "valid" ? slot.record.save.companion : null).toEqual(
+    save.companion,
+  );
 });
 
 test("inventory and Circle item effects persist through save slots", () => {

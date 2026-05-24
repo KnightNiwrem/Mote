@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { formatSlotLabel, initialPauseState, pauseReducer } from "./pause";
+import {
+  formatSlotLabel,
+  getActivePausePanel,
+  initialPauseState,
+  pauseReducer,
+} from "./pause";
 import { createInitialSaveGame } from "./save";
 
 test("pause reducer only opens when free-roam allows pause", () => {
@@ -13,6 +18,9 @@ test("pause reducer only opens when free-roam allows pause", () => {
     isPaused: true,
     panel: "root",
     selectedMenuItemId: "motes",
+    selectedInventoryCategoryIndex: 0,
+    selectedInventoryItemIndex: 0,
+    selectedCircleSlotIndex: 0,
     pendingOverwriteSlotId: null,
     notice: null,
   });
@@ -54,6 +62,7 @@ test("pause reducer activates selected menu items into subpanels", () => {
 
   expect(questsState.panel).toBe("quests");
   expect(questsState.selectedMenuItemId).toBe("quests");
+  expect(getActivePausePanel(questsState)).toBe("quests");
 
   expect(
     pauseReducer(questsState, {
@@ -104,6 +113,9 @@ test("pause reducer requires confirmation before overwriting occupied or corrupt
     pauseReducer(pendingValid, { type: "confirm-overwrite" })
       .pendingOverwriteSlotId,
   ).toBeNull();
+  expect(pauseReducer(pendingValid, { type: "confirm-overwrite" }).notice).toBe(
+    "Confirm overwriting this slot.",
+  );
 
   const pendingCorrupt = pauseReducer(openState, {
     type: "request-save",
@@ -120,6 +132,9 @@ test("pause reducer reports completed manual saves", () => {
       isPaused: true,
       panel: "save",
       selectedMenuItemId: "save",
+      selectedInventoryCategoryIndex: 0,
+      selectedInventoryItemIndex: 0,
+      selectedCircleSlotIndex: 0,
       pendingOverwriteSlotId: "slot-1",
       notice: null,
     },
@@ -129,4 +144,63 @@ test("pause reducer reports completed manual saves", () => {
   expect(savedState.pendingOverwriteSlotId).toBeNull();
   expect(savedState.notice).toBe("Saved Slot 1.");
   expect(formatSlotLabel("slot-3")).toBe("Slot 3");
+});
+
+test("pause reducer tracks focused inventory and Circle selections", () => {
+  const openState = pauseReducer(initialPauseState, {
+    type: "open",
+    canPause: true,
+  });
+
+  const inventoryState = pauseReducer(openState, {
+    type: "activate-menu-item",
+    itemId: "inventory",
+  });
+  const movedCategory = pauseReducer(inventoryState, {
+    type: "move-inventory-category",
+    delta: 1,
+    categoryCount: 3,
+  });
+  const movedItem = pauseReducer(movedCategory, {
+    type: "move-inventory-item",
+    delta: -1,
+    itemCount: 4,
+  });
+
+  expect(movedCategory.selectedInventoryCategoryIndex).toBe(1);
+  expect(movedCategory.selectedInventoryItemIndex).toBe(0);
+  expect(movedItem.selectedInventoryItemIndex).toBe(3);
+
+  const circleState = pauseReducer(openState, {
+    type: "activate-menu-item",
+    itemId: "motes",
+  });
+  const movedCircle = pauseReducer(circleState, {
+    type: "move-circle-slot",
+    delta: -1,
+    slotCount: 3,
+  });
+
+  expect(movedCircle.selectedCircleSlotIndex).toBe(2);
+});
+
+test("pause reducer reports failed manual saves without clearing pending overwrite", () => {
+  const failedState = pauseReducer(
+    {
+      isPaused: true,
+      panel: "save",
+      selectedMenuItemId: "save",
+      selectedInventoryCategoryIndex: 0,
+      selectedInventoryItemIndex: 0,
+      selectedCircleSlotIndex: 0,
+      pendingOverwriteSlotId: "slot-2",
+      notice: "Confirm overwriting this slot.",
+    },
+    { type: "save-failed", slotId: "slot-2" },
+  );
+
+  expect(failedState.pendingOverwriteSlotId).toBe("slot-2");
+  expect(failedState.notice).toBe(
+    "Could not save Slot 2. Check browser storage and try again.",
+  );
 });

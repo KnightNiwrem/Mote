@@ -35,6 +35,7 @@ import { assignAcquiredMindToCircle } from "@/game/systems/mindBody";
 import { loadGameOptions, saveGameOptions } from "@/game/systems/options";
 import {
   formatSlotLabel,
+  getActivePausePanel,
   initialPauseState,
   isPauseMenuItemId,
   type PauseMenuItemId,
@@ -55,7 +56,6 @@ import {
   setActiveSaveSlotId,
   writeSaveSlot,
 } from "@/game/systems/save";
-import type { ItemCategory } from "@/game/types/game";
 import type { GameOptions } from "@/game/types/options";
 import type { SaveGame, SaveSlotId, SaveSlotState } from "@/game/types/save";
 import { VirtualControls } from "@/game/VirtualControls";
@@ -63,6 +63,7 @@ import { cn } from "@/lib/utils";
 import "./index.css";
 
 type ShellView = "title" | "load" | "new-game" | "options";
+type PauseNavigationInput = "up" | "down" | "left" | "right" | "action";
 
 type TitleOverwrite = {
   slotId: SaveSlotId;
@@ -92,6 +93,7 @@ export function App() {
   const [titleOverwrite, setTitleOverwrite] = useState<TitleOverwrite | null>(
     null,
   );
+  const [titleNotice, setTitleNotice] = useState<string | null>(null);
   const [inventoryFeedback, setInventoryFeedback] = useState<string | null>(
     null,
   );
@@ -167,6 +169,7 @@ export function App() {
     setLatestSave(slot.record.save);
     setCanPause(false);
     dispatchPause({ type: "close" });
+    setTitleNotice(null);
     setIsPlaying(true);
     setGameSessionId((current) => current + 1);
     refreshSlots();
@@ -174,18 +177,30 @@ export function App() {
 
   const startNewGame = (slotId: SaveSlotId) => {
     const save = createInitialSaveGame();
-    writeSaveSlot(slotId, save);
+    const record = writeSaveSlot(slotId, save);
+
+    if (!record) {
+      setTitleNotice(
+        `Could not create a new game in ${formatSlotLabel(slotId)}. Check browser storage and try again.`,
+      );
+      refreshSlots();
+      return false;
+    }
+
     setActiveSlotIdState(slotId);
     setLatestSave(save);
     setCanPause(false);
     dispatchPause({ type: "close" });
     setTitleOverwrite(null);
+    setTitleNotice(null);
     setIsPlaying(true);
     setGameSessionId((current) => current + 1);
     refreshSlots();
+    return true;
   };
 
   const requestNewGame = () => {
+    setTitleNotice(null);
     const emptySlot = slots.find((slot) => slot.status === "empty");
 
     if (emptySlot) {
@@ -197,6 +212,8 @@ export function App() {
   };
 
   const handleSlotNewGame = (slot: SaveSlotState) => {
+    setTitleNotice(null);
+
     if (slot.status === "empty") {
       startNewGame(slot.slotId);
       return;
@@ -207,64 +224,98 @@ export function App() {
 
   const handleManualSave = (slotId: SaveSlotId) => {
     if (!latestSave) {
-      return;
+      dispatchPause({ type: "save-failed", slotId });
+      return false;
     }
 
-    writeSaveSlot(slotId, latestSave);
+    const record = writeSaveSlot(slotId, latestSave);
+
+    if (!record) {
+      dispatchPause({ type: "save-failed", slotId });
+      refreshSlots();
+      return false;
+    }
+
     setActiveSlotIdState(slotId);
     dispatchPause({ type: "saved", slotId });
     refreshSlots();
+    return true;
   };
 
   const writeGameplaySave = useCallback(
     (save: SaveGame) => {
       const slotId = activeSlotId ?? getActiveSaveSlotId() ?? "slot-1";
+      const record = writeSaveSlot(slotId, save);
 
-      writeSaveSlot(slotId, save);
-      setActiveSlotIdState(slotId);
+      if (!record) {
+        refreshSlots();
+        return false;
+      }
+
+      setActiveSlotIdState(record.slotId);
       setLatestSave(save);
       dispatchGameControl({ type: "sync-save", save });
       refreshSlots();
+      return true;
     },
     [activeSlotId, refreshSlots],
   );
 
-  const handleUseInventoryItem = (itemId: string) => {
-    if (!latestSave) {
-      setInventoryFeedback("Save state is not ready.");
-      return;
-    }
+  const handleUseInventoryItem = useCallback(
+    (itemId: string) => {
+      if (!latestSave) {
+        setInventoryFeedback("Save state is not ready.");
+        return;
+      }
 
-    const result = applyInventoryItem(latestSave, itemId, { context: "menu" });
-    setInventoryFeedback(result.feedback);
-
-    if (result.success) {
-      writeGameplaySave(result.save);
-    }
-  };
-
-  const handleAssignCircleMind = (slotIndex: number, mindId: string) => {
-    if (!latestSave) {
-      setCircleFeedback("Save state is not ready.");
-      return;
-    }
-
-    try {
-      const save = assignAcquiredMindToCircle(latestSave, slotIndex, mindId);
-      const mindName = MOTE_MINDS[mindId]?.name ?? mindId;
-      const progressedSave = advanceQuestObjective(save, {
-        type: "advance",
-        trigger: "circle-managed",
+      const result = applyInventoryItem(latestSave, itemId, {
+        context: "menu",
       });
+      setInventoryFeedback(result.feedback);
 
-      writeGameplaySave(progressedSave);
-      setCircleFeedback(`Assigned ${mindName} to slot ${slotIndex + 1}.`);
-    } catch (error) {
-      setCircleFeedback(
-        error instanceof Error ? error.message : "Could not assign that mind.",
-      );
-    }
-  };
+      if (result.success) {
+        if (!writeGameplaySave(result.save)) {
+          setInventoryFeedback(
+            "Could not save item use. Check browser storage and try again.",
+          );
+        }
+      }
+    },
+    [latestSave, writeGameplaySave],
+  );
+
+  const handleAssignCircleMind = useCallback(
+    (slotIndex: number, mindId: string) => {
+      if (!latestSave) {
+        setCircleFeedback("Save state is not ready.");
+        return;
+      }
+
+      try {
+        const save = assignAcquiredMindToCircle(latestSave, slotIndex, mindId);
+        const mindName = MOTE_MINDS[mindId]?.name ?? mindId;
+        const progressedSave = advanceQuestObjective(save, {
+          type: "advance",
+          trigger: "circle-managed",
+        });
+
+        if (writeGameplaySave(progressedSave)) {
+          setCircleFeedback(`Assigned ${mindName} to slot ${slotIndex + 1}.`);
+        } else {
+          setCircleFeedback(
+            "Could not save Circle changes. Check browser storage and try again.",
+          );
+        }
+      } catch (error) {
+        setCircleFeedback(
+          error instanceof Error
+            ? error.message
+            : "Could not assign that mind.",
+        );
+      }
+    },
+    [latestSave, writeGameplaySave],
+  );
 
   const requestPauseSave = (slot: SaveSlotState) => {
     if (slot.status === "empty") {
@@ -282,8 +333,9 @@ export function App() {
       return;
     }
 
-    handleManualSave(slotId);
-    dispatchPause({ type: "confirm-overwrite" });
+    if (handleManualSave(slotId)) {
+      dispatchPause({ type: "confirm-overwrite" });
+    }
   };
 
   const openPause = () => {
@@ -306,6 +358,118 @@ export function App() {
     [latestSave, writeGameplaySave],
   );
 
+  const handlePausePanelInput = useCallback(
+    (input: PauseNavigationInput) => {
+      if (!pauseState.isPaused) {
+        return false;
+      }
+
+      if (pauseState.panel === "inventory") {
+        const categoryCount = INVENTORY_CATEGORIES.length;
+        const selectedCategory =
+          INVENTORY_CATEGORIES[pauseState.selectedInventoryCategoryIndex] ??
+          "care";
+        const entries = latestSave
+          ? getInventoryEntries(latestSave.inventory, selectedCategory)
+          : [];
+        const selectedEntry =
+          entries[
+            Math.min(pauseState.selectedInventoryItemIndex, entries.length - 1)
+          ] ?? null;
+
+        if (input === "left" || input === "right") {
+          setInventoryFeedback(null);
+          dispatchPause({
+            type: "move-inventory-category",
+            delta: input === "right" ? 1 : -1,
+            categoryCount,
+          });
+          return true;
+        }
+
+        if (input === "up" || input === "down") {
+          dispatchPause({
+            type: "move-inventory-item",
+            delta: input === "down" ? 1 : -1,
+            itemCount: entries.length,
+          });
+          return true;
+        }
+
+        if (!selectedEntry) {
+          setInventoryFeedback(
+            `No ${INVENTORY_CATEGORY_LABELS[selectedCategory].toLowerCase()} in the inventory.`,
+          );
+          return true;
+        }
+
+        handleUseInventoryItem(selectedEntry.itemId);
+        return true;
+      }
+
+      if (pauseState.panel === "motes") {
+        const rows = latestSave ? createCircleMenuRows(latestSave) : [];
+        const mindOptions = latestSave
+          ? getCircleAssignableMindOptions(latestSave)
+          : [];
+        const selectedRow =
+          rows[Math.min(pauseState.selectedCircleSlotIndex, rows.length - 1)] ??
+          null;
+
+        if (input === "up" || input === "down") {
+          dispatchPause({
+            type: "move-circle-slot",
+            delta: input === "down" ? 1 : -1,
+            slotCount: rows.length,
+          });
+          return true;
+        }
+
+        if (input === "left" || input === "right" || input === "action") {
+          if (!selectedRow || selectedRow.state === "empty") {
+            setCircleFeedback("Choose an occupied Circle slot.");
+            return true;
+          }
+
+          if (mindOptions.length === 0) {
+            setCircleFeedback("No minds are available to assign.");
+            return true;
+          }
+
+          const currentMindIndex = Math.max(
+            0,
+            mindOptions.findIndex((mind) => mind.mindId === selectedRow.mindId),
+          );
+          const delta = input === "left" ? -1 : 1;
+          const nextMind =
+            mindOptions[
+              (currentMindIndex + delta + mindOptions.length) %
+                mindOptions.length
+            ];
+
+          if (nextMind) {
+            setCircleFeedback(null);
+            handleAssignCircleMind(selectedRow.index, nextMind.mindId);
+          }
+
+          return true;
+        }
+      }
+
+      return false;
+    },
+    [
+      handleAssignCircleMind,
+      handleUseInventoryItem,
+      latestSave,
+      pauseState.isPaused,
+      pauseState.panel,
+      pauseState.selectedCircleSlotIndex,
+      pauseState.selectedInventoryCategoryIndex,
+      pauseState.selectedInventoryItemIndex,
+    ],
+  );
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (!isPlaying || event.repeat) {
@@ -323,18 +487,45 @@ export function App() {
 
         if (event.key === "ArrowDown" || key === "s") {
           event.preventDefault();
+          if (handlePausePanelInput("down")) {
+            return;
+          }
           dispatchPause({ type: "move-menu", delta: 1 });
           return;
         }
 
         if (event.key === "ArrowUp" || key === "w") {
           event.preventDefault();
+          if (handlePausePanelInput("up")) {
+            return;
+          }
+          dispatchPause({ type: "move-menu", delta: -1 });
+          return;
+        }
+
+        if (event.key === "ArrowRight" || key === "d") {
+          event.preventDefault();
+          if (handlePausePanelInput("right")) {
+            return;
+          }
+          dispatchPause({ type: "move-menu", delta: 1 });
+          return;
+        }
+
+        if (event.key === "ArrowLeft" || key === "a") {
+          event.preventDefault();
+          if (handlePausePanelInput("left")) {
+            return;
+          }
           dispatchPause({ type: "move-menu", delta: -1 });
           return;
         }
 
         if (event.key === "Enter" || event.key === " " || key === "e") {
           event.preventDefault();
+          if (handlePausePanelInput("action")) {
+            return;
+          }
           activatePauseMenuItem(pauseState.selectedMenuItemId);
           return;
         }
@@ -357,6 +548,7 @@ export function App() {
   }, [
     canPause,
     activatePauseMenuItem,
+    handlePausePanelInput,
     isPlaying,
     pauseState.isPaused,
     pauseState.selectedMenuItemId,
@@ -371,6 +563,10 @@ export function App() {
       const input = (event as CustomEvent<GameControlInput>).detail;
 
       if (input.type === "direction-start") {
+        if (handlePausePanelInput(input.direction)) {
+          return;
+        }
+
         if (input.direction === "down" || input.direction === "right") {
           dispatchPause({ type: "move-menu", delta: 1 });
         } else {
@@ -380,6 +576,10 @@ export function App() {
       }
 
       if (input.type === "action") {
+        if (handlePausePanelInput("action")) {
+          return;
+        }
+
         activatePauseMenuItem(pauseState.selectedMenuItemId);
       }
     };
@@ -390,6 +590,7 @@ export function App() {
     };
   }, [
     activatePauseMenuItem,
+    handlePausePanelInput,
     isPlaying,
     pauseState.isPaused,
     pauseState.selectedMenuItemId,
@@ -447,6 +648,27 @@ export function App() {
                   onInventoryFeedback={setInventoryFeedback}
                   onOptionsChange={setOptions}
                   onRequestSave={requestPauseSave}
+                  onSelectCircleSlot={(index, slotCount) =>
+                    dispatchPause({
+                      type: "select-circle-slot",
+                      index,
+                      slotCount,
+                    })
+                  }
+                  onSelectInventoryCategory={(index) =>
+                    dispatchPause({
+                      type: "select-inventory-category",
+                      index,
+                      categoryCount: INVENTORY_CATEGORIES.length,
+                    })
+                  }
+                  onSelectInventoryItem={(index, itemCount) =>
+                    dispatchPause({
+                      type: "select-inventory-item",
+                      index,
+                      itemCount,
+                    })
+                  }
                   onAssignCircleMind={handleAssignCircleMind}
                   onActivateMenuItem={activatePauseMenuItem}
                   onUseInventoryItem={handleUseInventoryItem}
@@ -482,6 +704,7 @@ export function App() {
             onBack={() => {
               setShellView("title");
               setTitleOverwrite(null);
+              setTitleNotice(null);
             }}
             onContinue={() => {
               if (latestSlot) {
@@ -496,6 +719,7 @@ export function App() {
             setShellView={setShellView}
             shellView={shellView}
             slots={slots}
+            titleNotice={titleNotice}
             titleOverwrite={titleOverwrite}
           />
         )}
@@ -519,6 +743,7 @@ function TitleShell({
   setShellView,
   shellView,
   slots,
+  titleNotice,
   titleOverwrite,
 }: {
   canContinue: boolean;
@@ -535,6 +760,7 @@ function TitleShell({
   setShellView: (view: ShellView) => void;
   shellView: ShellView;
   slots: SaveSlotState[];
+  titleNotice: string | null;
   titleOverwrite: TitleOverwrite | null;
 }) {
   const titleMenu = createTitleMenuModel(canContinue);
@@ -576,6 +802,11 @@ function TitleShell({
       </section>
 
       <section className={cn(panelClass, "p-4")}>
+        {titleNotice ? (
+          <p className="mb-4 rounded border border-[#fbbf24] bg-[#2b2110] p-2 text-sm text-[#fef3c7]">
+            {titleNotice}
+          </p>
+        ) : null}
         {shellView === "title" ? (
           <TitleSummary latestSlot={latestSlot} slots={slots} />
         ) : null}
@@ -711,6 +942,9 @@ function PauseOverlay({
   onInventoryFeedback,
   onOptionsChange,
   onRequestSave,
+  onSelectCircleSlot,
+  onSelectInventoryCategory,
+  onSelectInventoryItem,
   onActivateMenuItem,
   onUseInventoryItem,
   options,
@@ -728,6 +962,9 @@ function PauseOverlay({
   onInventoryFeedback: (feedback: string | null) => void;
   onOptionsChange: (options: GameOptions) => void;
   onRequestSave: (slot: SaveSlotState) => void;
+  onSelectCircleSlot: (index: number, slotCount: number) => void;
+  onSelectInventoryCategory: (index: number) => void;
+  onSelectInventoryItem: (index: number, itemCount: number) => void;
   onActivateMenuItem: (itemId: PauseMenuItemId) => void;
   onUseInventoryItem: (itemId: string) => void;
   options: GameOptions;
@@ -735,10 +972,7 @@ function PauseOverlay({
   slots: SaveSlotState[];
 }) {
   const pauseMenu = createPauseMenuModel(pauseState.selectedMenuItemId);
-  const activePanel =
-    pauseState.panel === "root" && pauseState.selectedMenuItemId !== "return"
-      ? pauseState.selectedMenuItemId
-      : pauseState.panel;
+  const activePanel = getActivePausePanel(pauseState);
 
   return (
     <div className="absolute inset-0 z-10 grid grid-cols-[112px_minmax(0,1fr)] gap-2 bg-[#08110f]/90 p-2 text-[#f8fafc] sm:grid-cols-[168px_minmax(0,1fr)] sm:gap-3 sm:p-3">
@@ -785,6 +1019,8 @@ function PauseOverlay({
             latestSave={latestSave}
             onAssignMind={onAssignCircleMind}
             onFeedback={onCircleFeedback}
+            onSelectSlot={onSelectCircleSlot}
+            selectedSlotIndex={pauseState.selectedCircleSlotIndex}
           />
         ) : null}
         {activePanel === "inventory" ? (
@@ -792,7 +1028,11 @@ function PauseOverlay({
             feedback={inventoryFeedback}
             latestSave={latestSave}
             onFeedback={onInventoryFeedback}
+            onSelectCategory={onSelectInventoryCategory}
+            onSelectItem={onSelectInventoryItem}
             onUseItem={onUseInventoryItem}
+            selectedCategoryIndex={pauseState.selectedInventoryCategoryIndex}
+            selectedItemIndex={pauseState.selectedInventoryItemIndex}
           />
         ) : null}
         {activePanel === "quests" ? (
@@ -837,11 +1077,15 @@ function MotesPanel({
   latestSave,
   onAssignMind,
   onFeedback,
+  onSelectSlot,
+  selectedSlotIndex,
 }: {
   feedback: string | null;
   latestSave: SaveGame | null;
   onAssignMind: (slotIndex: number, mindId: string) => void;
   onFeedback: (feedback: string | null) => void;
+  onSelectSlot: (index: number, slotCount: number) => void;
+  selectedSlotIndex: number;
 }) {
   const rows = latestSave ? createCircleMenuRows(latestSave) : [];
   const mindOptions = latestSave
@@ -875,7 +1119,12 @@ function MotesPanel({
         {rows.map((row, index) =>
           row.state === "occupied" ? (
             <div
-              className="grid gap-2 rounded border border-[#2f6b56] bg-[#101820] p-2 text-sm sm:grid-cols-[1fr_190px]"
+              className={cn(
+                "grid gap-2 rounded border bg-[#101820] p-2 text-sm sm:grid-cols-[1fr_190px]",
+                selectedSlotIndex === index
+                  ? "border-[#fbbf24]"
+                  : "border-[#2f6b56]",
+              )}
               key={circleMenu.items[index]?.id ?? row.label}
             >
               <div>
@@ -903,6 +1152,7 @@ function MotesPanel({
                   className="rounded border border-[#4f8f79] bg-[#0a1412] px-2 py-2 text-[#f8fafc]"
                   onChange={(event) => {
                     onFeedback(null);
+                    onSelectSlot(index, rows.length);
                     onAssignMind(row.index, event.currentTarget.value);
                   }}
                   value={row.mindId}
@@ -917,7 +1167,12 @@ function MotesPanel({
             </div>
           ) : (
             <div
-              className="rounded border border-[#1f513f] bg-[#0a1412] p-2 text-sm text-[#6b8f83]"
+              className={cn(
+                "rounded border bg-[#0a1412] p-2 text-sm text-[#6b8f83]",
+                selectedSlotIndex === index
+                  ? "border-[#fbbf24]"
+                  : "border-[#1f513f]",
+              )}
               key={circleMenu.items[index]?.id ?? row.label}
             >
               {row.index + 1}. Empty | Order -
@@ -933,15 +1188,23 @@ function InventoryPanel({
   feedback,
   latestSave,
   onFeedback,
+  onSelectCategory,
+  onSelectItem,
   onUseItem,
+  selectedCategoryIndex,
+  selectedItemIndex,
 }: {
   feedback: string | null;
   latestSave: SaveGame | null;
   onFeedback: (feedback: string | null) => void;
+  onSelectCategory: (index: number) => void;
+  onSelectItem: (index: number, itemCount: number) => void;
   onUseItem: (itemId: string) => void;
+  selectedCategoryIndex: number;
+  selectedItemIndex: number;
 }) {
-  const [selectedCategory, setSelectedCategory] =
-    useState<ItemCategory>("care");
+  const selectedCategory =
+    INVENTORY_CATEGORIES[selectedCategoryIndex] ?? "care";
   const entries = latestSave
     ? getInventoryEntries(latestSave.inventory, selectedCategory)
     : [];
@@ -960,7 +1223,7 @@ function InventoryPanel({
         <p className="text-sm text-[#badbcc]">Caretaker satchel</p>
       </div>
       <div className="flex flex-wrap gap-2">
-        {categoryMenu.items.map((item) => (
+        {categoryMenu.items.map((item, index) => (
           <Button
             className={cn(
               "border-[#4f8f79] bg-[#132820] text-[#f8fafc] hover:bg-[#1f513f]",
@@ -970,7 +1233,7 @@ function InventoryPanel({
             key={item.id}
             onClick={() => {
               onFeedback(null);
-              setSelectedCategory(item.id as ItemCategory);
+              onSelectCategory(index);
             }}
             size="sm"
             type="button"
@@ -987,9 +1250,14 @@ function InventoryPanel({
       ) : null}
       {entries.length > 0 && latestSave ? (
         <div className="grid gap-2">
-          {entries.map((entry) => (
+          {entries.map((entry, index) => (
             <div
-              className="grid gap-2 rounded border border-[#2f6b56] bg-[#101820] p-3 text-sm sm:grid-cols-[1fr_auto]"
+              className={cn(
+                "grid gap-2 rounded border bg-[#101820] p-3 text-sm sm:grid-cols-[1fr_auto]",
+                selectedItemIndex === index
+                  ? "border-[#fbbf24]"
+                  : "border-[#2f6b56]",
+              )}
               key={entry.itemId}
             >
               <div>
@@ -1011,7 +1279,10 @@ function InventoryPanel({
                 disabled={
                   !canUseInventoryItem(latestSave, entry.itemId, "menu")
                 }
-                onClick={() => onUseItem(entry.itemId)}
+                onClick={() => {
+                  onSelectItem(index, entries.length);
+                  onUseItem(entry.itemId);
+                }}
                 size="sm"
                 type="button"
                 variant="outline"
