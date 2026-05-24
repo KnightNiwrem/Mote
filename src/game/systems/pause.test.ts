@@ -12,22 +12,30 @@ test("pause reducer only opens when free-roam allows pause", () => {
   ).toEqual({
     isPaused: true,
     panel: "root",
+    selectedMenuItemId: "motes",
     pendingOverwriteSlotId: null,
     notice: null,
   });
 });
 
-test("pause reducer navigates panels and closes cleanly", () => {
+test("pause reducer navigates menu items, panels, and closes cleanly", () => {
   const openState = pauseReducer(initialPauseState, {
     type: "open",
     canPause: true,
   });
+  const selectedInventory = pauseReducer(openState, {
+    type: "move-menu",
+    delta: 1,
+  });
+  expect(selectedInventory.selectedMenuItemId).toBe("inventory");
+
   const inventoryState = pauseReducer(openState, {
     type: "select-panel",
     panel: "inventory",
   });
 
   expect(inventoryState.panel).toBe("inventory");
+  expect(inventoryState.selectedMenuItemId).toBe("inventory");
   expect(pauseReducer(inventoryState, { type: "close" })).toEqual(
     initialPauseState,
   );
@@ -89,6 +97,7 @@ test("pause reducer reports completed manual saves", () => {
     {
       isPaused: true,
       panel: "save",
+      selectedMenuItemId: "save",
       pendingOverwriteSlotId: "slot-1",
       notice: null,
     },

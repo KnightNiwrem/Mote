@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { setAudioOptions } from "@/game/audio";
 import {
@@ -10,7 +10,9 @@ import { GameHost } from "@/game/GameHost";
 import {
   DEFAULT_CONTROL_BINDINGS,
   dispatchGameControl,
+  GAME_CONTROL_EVENT,
   GAME_RUNTIME_EVENT,
+  type GameControlInput,
   type GameRuntimeEvent,
 } from "@/game/input";
 import {
@@ -34,6 +36,7 @@ import { loadGameOptions, saveGameOptions } from "@/game/systems/options";
 import {
   formatSlotLabel,
   initialPauseState,
+  isPauseMenuItemId,
   type PausePanel,
   pauseReducer,
 } from "@/game/systems/pause";
@@ -138,35 +141,10 @@ export function App() {
     dispatchGameControl({ type: "pause", paused: pauseState.isPaused });
   }, [isPlaying, pauseState.isPaused]);
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (!isPlaying || event.repeat) {
-        return;
-      }
-
-      if (event.key !== "Escape" && event.key.toLowerCase() !== "p") {
-        return;
-      }
-
-      event.preventDefault();
-
-      if (pauseState.isPaused) {
-        dispatchPause({ type: "close" });
-      } else {
-        dispatchPause({ type: "open", canPause });
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [canPause, isPlaying, pauseState.isPaused]);
-
-  const refreshSlots = () => {
+  const refreshSlots = useCallback(() => {
     setSlots(listSaveSlots());
     setActiveSlotIdState(getActiveSaveSlotId());
-  };
+  }, []);
 
   const startExistingSlot = (slotId: SaveSlotId) => {
     const slot = readSaveSlot(slotId);
@@ -230,15 +208,18 @@ export function App() {
     refreshSlots();
   };
 
-  const writeGameplaySave = (save: SaveGame) => {
-    const slotId = activeSlotId ?? getActiveSaveSlotId() ?? "slot-1";
+  const writeGameplaySave = useCallback(
+    (save: SaveGame) => {
+      const slotId = activeSlotId ?? getActiveSaveSlotId() ?? "slot-1";
 
-    writeSaveSlot(slotId, save);
-    setActiveSlotIdState(slotId);
-    setLatestSave(save);
-    dispatchGameControl({ type: "sync-save", save });
-    refreshSlots();
-  };
+      writeSaveSlot(slotId, save);
+      setActiveSlotIdState(slotId);
+      setLatestSave(save);
+      dispatchGameControl({ type: "sync-save", save });
+      refreshSlots();
+    },
+    [activeSlotId, refreshSlots],
+  );
 
   const handleUseInventoryItem = (itemId: string) => {
     if (!latestSave) {
@@ -301,18 +282,120 @@ export function App() {
     dispatchPause({ type: "open", canPause });
   };
 
-  const handleSelectPausePanel = (panel: PausePanel) => {
-    if (panel === "motes" && latestSave) {
-      writeGameplaySave(
-        advanceQuestObjective(latestSave, {
-          type: "advance",
-          trigger: "circle-managed",
-        }),
-      );
-    }
+  const handleSelectPausePanel = useCallback(
+    (panel: PausePanel) => {
+      if (panel === "motes" && latestSave) {
+        writeGameplaySave(
+          advanceQuestObjective(latestSave, {
+            type: "advance",
+            trigger: "circle-managed",
+          }),
+        );
+      }
 
-    dispatchPause({ type: "select-panel", panel });
-  };
+      dispatchPause({ type: "select-panel", panel });
+    },
+    [latestSave, writeGameplaySave],
+  );
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!isPlaying || event.repeat) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+
+      if (pauseState.isPaused) {
+        if (event.key === "Escape" || key === "p") {
+          event.preventDefault();
+          dispatchPause({ type: "close" });
+          return;
+        }
+
+        if (event.key === "ArrowDown" || key === "s") {
+          event.preventDefault();
+          dispatchPause({ type: "move-menu", delta: 1 });
+          return;
+        }
+
+        if (event.key === "ArrowUp" || key === "w") {
+          event.preventDefault();
+          dispatchPause({ type: "move-menu", delta: -1 });
+          return;
+        }
+
+        if (event.key === "Enter" || event.key === " " || key === "e") {
+          event.preventDefault();
+          if (pauseState.selectedMenuItemId === "return") {
+            dispatchPause({ type: "close" });
+            return;
+          }
+
+          handleSelectPausePanel(pauseState.selectedMenuItemId);
+          return;
+        }
+
+        return;
+      }
+
+      if (event.key !== "Escape" && key !== "p") {
+        return;
+      }
+
+      event.preventDefault();
+      dispatchPause({ type: "open", canPause });
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [
+    canPause,
+    handleSelectPausePanel,
+    isPlaying,
+    pauseState.isPaused,
+    pauseState.selectedMenuItemId,
+  ]);
+
+  useEffect(() => {
+    const handleGameControl = (event: Event) => {
+      if (!isPlaying || !pauseState.isPaused) {
+        return;
+      }
+
+      const input = (event as CustomEvent<GameControlInput>).detail;
+
+      if (input.type === "direction-start") {
+        if (input.direction === "down" || input.direction === "right") {
+          dispatchPause({ type: "move-menu", delta: 1 });
+        } else {
+          dispatchPause({ type: "move-menu", delta: -1 });
+        }
+        return;
+      }
+
+      if (input.type === "action") {
+        if (pauseState.selectedMenuItemId === "return") {
+          dispatchPause({ type: "close" });
+          return;
+        }
+
+        handleSelectPausePanel(pauseState.selectedMenuItemId);
+      }
+    };
+
+    window.addEventListener(GAME_CONTROL_EVENT, handleGameControl);
+    return () => {
+      window.removeEventListener(GAME_CONTROL_EVENT, handleGameControl);
+    };
+  }, [
+    handleSelectPausePanel,
+    isPlaying,
+    pauseState.isPaused,
+    pauseState.selectedMenuItemId,
+  ]);
 
   return (
     <main className="min-h-screen w-full bg-[#101820] px-4 py-4 text-[#f8fafc] sm:px-6">
@@ -379,8 +462,11 @@ export function App() {
             <ControlsPanel />
             <VirtualControls
               controlDisplay={options.controlDisplay}
-              disabled={pauseState.isPaused}
-              onMenu={openPause}
+              onMenu={() =>
+                pauseState.isPaused
+                  ? dispatchPause({ type: "close" })
+                  : openPause()
+              }
             />
           </>
         ) : (
@@ -653,9 +739,7 @@ function PauseOverlay({
   pauseState: ReturnType<typeof pauseReducer>;
   slots: SaveSlotState[];
 }) {
-  const pauseMenu = createPauseMenuModel(
-    pauseState.panel === "root" ? null : pauseState.panel,
-  );
+  const pauseMenu = createPauseMenuModel(pauseState.selectedMenuItemId);
 
   return (
     <div className="absolute inset-0 z-10 grid gap-3 bg-[#08110f]/90 p-3 text-[#f8fafc] sm:grid-cols-[168px_1fr]">
@@ -664,20 +748,24 @@ function PauseOverlay({
           <Button
             className={cn(
               "justify-start border-[#4f8f79] bg-[#132820] text-[#f8fafc] hover:bg-[#1f513f]",
-              pauseState.panel === item.id && "border-[#fbbf24] text-[#fef3c7]",
+              pauseState.selectedMenuItemId === item.id &&
+                "border-[#fbbf24] text-[#fef3c7]",
+              pauseState.panel === item.id && "bg-[#1f513f]",
               item.id === "return" &&
                 "border-[#67e8f9] bg-[#0d1d18] hover:bg-[#173f32]",
             )}
             key={item.id}
             onClick={() => {
+              if (!isPauseMenuItemId(item.id)) {
+                return;
+              }
+
               if (item.id === "return") {
                 onClose();
                 return;
               }
 
-              if (isPausePanel(item.id)) {
-                onSelectPanel(item.id);
-              }
+              onSelectPanel(item.id);
             }}
             size="sm"
             type="button"
@@ -1274,16 +1362,6 @@ function getLatestValidSlot(
     Date.parse(latest.record.metadata.updatedAt)
       ? slot
       : latest,
-  );
-}
-
-function isPausePanel(panel: string): panel is Exclude<PausePanel, "root"> {
-  return (
-    panel === "motes" ||
-    panel === "inventory" ||
-    panel === "quests" ||
-    panel === "save" ||
-    panel === "options"
   );
 }
 
