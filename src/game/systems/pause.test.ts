@@ -41,6 +41,28 @@ test("pause reducer navigates menu items, panels, and closes cleanly", () => {
   );
 });
 
+test("pause reducer activates selected menu items into subpanels", () => {
+  const openState = pauseReducer(initialPauseState, {
+    type: "open",
+    canPause: true,
+  });
+
+  const questsState = pauseReducer(openState, {
+    type: "activate-menu-item",
+    itemId: "quests",
+  });
+
+  expect(questsState.panel).toBe("quests");
+  expect(questsState.selectedMenuItemId).toBe("quests");
+
+  expect(
+    pauseReducer(questsState, {
+      type: "activate-menu-item",
+      itemId: "return",
+    }),
+  ).toEqual(initialPauseState);
+});
+
 test("pause reducer requires confirmation before overwriting occupied or corrupt slots", () => {
   const openState = pauseReducer(initialPauseState, {
     type: "open",

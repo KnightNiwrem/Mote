@@ -32,6 +32,7 @@ export type PauseAction =
   | { type: "close" }
   | { type: "move-menu"; delta: 1 | -1 }
   | { type: "select-menu-item"; itemId: PauseMenuItemId }
+  | { type: "activate-menu-item"; itemId: PauseMenuItemId }
   | { type: "select-panel"; panel: PausePanel }
   | { type: "request-save"; slot: SaveSlotState }
   | { type: "confirm-overwrite" }
@@ -81,6 +82,22 @@ export function pauseReducer(
             selectedMenuItemId: action.itemId,
           }
         : state;
+    case "activate-menu-item":
+      if (!state.isPaused) {
+        return state;
+      }
+
+      if (action.itemId === "return") {
+        return initialPauseState;
+      }
+
+      return {
+        ...state,
+        panel: action.itemId,
+        selectedMenuItemId: action.itemId,
+        pendingOverwriteSlotId: null,
+        notice: null,
+      };
     case "select-panel":
       return state.isPaused
         ? {

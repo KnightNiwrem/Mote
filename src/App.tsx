@@ -37,7 +37,7 @@ import {
   formatSlotLabel,
   initialPauseState,
   isPauseMenuItemId,
-  type PausePanel,
+  type PauseMenuItemId,
   pauseReducer,
 } from "@/game/systems/pause";
 import {
@@ -282,9 +282,9 @@ export function App() {
     dispatchPause({ type: "open", canPause });
   };
 
-  const handleSelectPausePanel = useCallback(
-    (panel: PausePanel) => {
-      if (panel === "motes" && latestSave) {
+  const activatePauseMenuItem = useCallback(
+    (itemId: PauseMenuItemId) => {
+      if (itemId === "motes" && latestSave) {
         writeGameplaySave(
           advanceQuestObjective(latestSave, {
             type: "advance",
@@ -293,7 +293,7 @@ export function App() {
         );
       }
 
-      dispatchPause({ type: "select-panel", panel });
+      dispatchPause({ type: "activate-menu-item", itemId });
     },
     [latestSave, writeGameplaySave],
   );
@@ -327,12 +327,7 @@ export function App() {
 
         if (event.key === "Enter" || event.key === " " || key === "e") {
           event.preventDefault();
-          if (pauseState.selectedMenuItemId === "return") {
-            dispatchPause({ type: "close" });
-            return;
-          }
-
-          handleSelectPausePanel(pauseState.selectedMenuItemId);
+          activatePauseMenuItem(pauseState.selectedMenuItemId);
           return;
         }
 
@@ -353,7 +348,7 @@ export function App() {
     };
   }, [
     canPause,
-    handleSelectPausePanel,
+    activatePauseMenuItem,
     isPlaying,
     pauseState.isPaused,
     pauseState.selectedMenuItemId,
@@ -377,12 +372,7 @@ export function App() {
       }
 
       if (input.type === "action") {
-        if (pauseState.selectedMenuItemId === "return") {
-          dispatchPause({ type: "close" });
-          return;
-        }
-
-        handleSelectPausePanel(pauseState.selectedMenuItemId);
+        activatePauseMenuItem(pauseState.selectedMenuItemId);
       }
     };
 
@@ -391,7 +381,7 @@ export function App() {
       window.removeEventListener(GAME_CONTROL_EVENT, handleGameControl);
     };
   }, [
-    handleSelectPausePanel,
+    activatePauseMenuItem,
     isPlaying,
     pauseState.isPaused,
     pauseState.selectedMenuItemId,
@@ -446,12 +436,11 @@ export function App() {
                     dispatchPause({ type: "cancel-overwrite" })
                   }
                   onCircleFeedback={setCircleFeedback}
-                  onClose={() => dispatchPause({ type: "close" })}
                   onInventoryFeedback={setInventoryFeedback}
                   onOptionsChange={setOptions}
                   onRequestSave={requestPauseSave}
                   onAssignCircleMind={handleAssignCircleMind}
-                  onSelectPanel={handleSelectPausePanel}
+                  onActivateMenuItem={activatePauseMenuItem}
                   onUseInventoryItem={handleUseInventoryItem}
                   options={options}
                   pauseState={pauseState}
@@ -711,11 +700,10 @@ function PauseOverlay({
   onCancelOverwrite,
   onAssignCircleMind,
   onCircleFeedback,
-  onClose,
   onInventoryFeedback,
   onOptionsChange,
   onRequestSave,
-  onSelectPanel,
+  onActivateMenuItem,
   onUseInventoryItem,
   options,
   pauseState,
@@ -729,11 +717,10 @@ function PauseOverlay({
   onCancelOverwrite: () => void;
   onAssignCircleMind: (slotIndex: number, mindId: string) => void;
   onCircleFeedback: (feedback: string | null) => void;
-  onClose: () => void;
   onInventoryFeedback: (feedback: string | null) => void;
   onOptionsChange: (options: GameOptions) => void;
   onRequestSave: (slot: SaveSlotState) => void;
-  onSelectPanel: (panel: PausePanel) => void;
+  onActivateMenuItem: (itemId: PauseMenuItemId) => void;
   onUseInventoryItem: (itemId: string) => void;
   options: GameOptions;
   pauseState: ReturnType<typeof pauseReducer>;
@@ -760,12 +747,7 @@ function PauseOverlay({
                 return;
               }
 
-              if (item.id === "return") {
-                onClose();
-                return;
-              }
-
-              onSelectPanel(item.id);
+              onActivateMenuItem(item.id);
             }}
             size="sm"
             type="button"
