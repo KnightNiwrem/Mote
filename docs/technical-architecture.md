@@ -1,254 +1,630 @@
 # Mote Technical Architecture
 
-## Overview
+## Architecture Goal
 
-Mote should be implemented as a client-only React and Phaser application built with Bun. React owns the application shell, routed panels, settings, and durable UI overlays. Phaser owns the active game canvas, scenes, sprites, maps, input processing, camera, collisions, and battle presentation.
+Mote is a production-ready client-only React, Bun, TypeScript, and Phaser RPG architecture for a classic 2D aerial-view creature game. The game may ship early chapters with placeholder art, sprites, animation, music, and sound effects, but it must not ship with placeholder core systems.
 
-The architecture should keep simulation rules independent from rendering. Battle math, Mote Circle rules, save serialization, quest state, and mind/body compatibility should live in plain TypeScript modules so they can be tested with Bun's built-in test runner.
+The architecture must support:
 
-## Current Stack
+- Deterministic and testable simulation rules.
+- Data-driven maps, NPCs, dialogue, quests, battles, items, rewards, bodies, and minds.
+- Explicit scene and interaction state machines.
+- Save/load with schema validation and migrations.
+- Static production builds with no backend dependency.
+- Expansion into additional regions, factions, Trials, Garden features, and optional local AI adapters.
 
-- Runtime and package manager: Bun 1.3.14
-- UI: React 19 and TypeScript
-- Styling: Tailwind CSS 4
-- Components: shadcn/ui-style components and Radix primitives
-- Game runtime: Phaser 4.1.0
-- Validation: Biome, TypeScript, Bun test, production build
+## Current Architecture Audit
 
-## Proposed Runtime Additions
+### What Works
 
-### Phaser 4
+- React owns the browser shell and mounts Phaser through `GameHost`.
+- Phaser owns canvas rendering, scenes, input, movement, camera, battle presentation, generated textures, and generated audio.
+- Core simulation rules are partially separated into testable systems:
+  - `battle.ts`
+  - `moteCircle.ts`
+  - `mindBody.ts`
+  - `movement.ts`
+  - `encounters.ts`
+  - `save.ts`
+  - `trials.ts`
+- Save data is versioned and validated before use.
+- The current slice supports Garden care, overworld movement, NPC interaction, map transitions, wild encounters, battle rewards, body acquisition, Circle assignment, mind/body pairing, Trial completion, and local persistence.
 
-Use Phaser 4 for the game canvas. Phaser provides scene lifecycles, spritesheet animation, cameras, input, tilemap loading, and Arcade Physics for top-down movement and collisions.
+### Architectural Gaps
 
-Because Mote is a greenfield project, target Phaser 4 APIs directly. Keep the first slice on standard Phaser objects and systems such as scenes, sprites, text, tilemaps, cameras, and Arcade Physics. Avoid Phaser 3-era renderer pipelines, custom renderer internals, and shader assumptions unless a later milestone explicitly requires custom rendering.
+- `WorldScene` and `BattleScene` are too large. They mix rendering, input handling, menu state, dialogue, persistence, encounter orchestration, battle transitions, and gameplay decisions.
+- There is no explicit game runtime state machine. Scene transitions are direct Phaser calls, and interaction modes are local string unions.
+- Garden-specific logic lives inside `WorldScene`.
+- Dialogue is not a system. NPCs store string arrays, but scenes cannot branch, gate by quest state, trigger effects, or run cutscenes.
+- Cutscenes are absent.
+- Quests are freeform save flags, not typed definitions with objectives, conditions, rewards, and validation.
+- Inventory is a raw record without item definitions, categories, effects, or menu behavior.
+- Menus are scene-local text objects. There is no shared menu model for battle, Circle, inventory, settings, save slots, or dialogue choices.
+- Map data is hardcoded TypeScript ASCII rows. This is useful for prototyping but not enough for production content.
+- Battle is deterministic and testable, but it has no command reducer for Fight, Mote, Item, and Run. Energy and accuracy exist in data but are not enforced.
+- Art and music are generated in code. That is acceptable for placeholder polish, but there is no asset manifest, preload plan, or replacement path.
+- Browser smoke coverage is not automated yet, so Phaser lifecycle, mobile input, and layout regressions are under-tested.
 
-### Tiled
+## Runtime Boundaries
 
-Use Tiled as the map authoring tool and export maps as JSON. Store exported maps and tilesets under version control once the asset pipeline stabilizes.
+### React Shell
 
-## Application Boundaries
+React owns browser-level application concerns:
+
+- Game mount lifecycle.
+- Title screen and save slot selection.
+- New Game, Continue, Load, and Options flow.
+- Browser-level settings and accessibility panels.
+- Mobile virtual controls.
+- Optional debug panels.
+- Durable overlays that should survive Phaser scene changes.
+
+React must not read or mutate Phaser scene internals. Communication with Phaser happens through a narrow typed bridge.
+
+Recommended modules:
 
 ```text
-React shell
-  App layout
-  Settings
-  Save slot UI
-  Menus and overlays
-  Optional debug panels
-
-Phaser game
-  Boot/loading scene
-  World and Garden scenes
-  Battle scene
-  UI scene for canvas-native dialogue and prompts
-
-Pure TypeScript systems
-  Battle rules
-  Mote Circle state
-  Mind/body compatibility
-  Quest flags
-  Save data
-  Encounter tables
+src/game/runtime/GameHost.tsx
+src/game/runtime/events.ts
+src/game/runtime/gameConfig.ts
+src/game/runtime/inputBridge.ts
+src/game/runtime/saveSlots.ts
 ```
 
-React and Phaser should communicate through a narrow event bridge instead of sharing mutable scene internals.
+### Phaser Runtime
 
-## Recommended Source Layout
+Phaser owns real-time game presentation:
+
+- Canvas rendering.
+- Scene lifecycle.
+- Cameras.
+- Tilemap rendering.
+- Sprites and animation.
+- Collision presentation.
+- Scene-local visual effects.
+- Battle presentation.
+- Canvas-native dialogue and menus needed during play.
+
+Phaser scenes may call pure systems, but they should not contain business rules that can be expressed as reducers or content interpreters.
+
+### Pure TypeScript Domain Layer
+
+Pure systems own game rules and state transitions:
 
 ```text
-src/
-  game/
-    GameHost.tsx
-    config.ts
-    events.ts
-    scenes/
-      BootScene.ts
-      GardenScene.ts
-      WorldScene.ts
-      BattleScene.ts
-      UIScene.ts
-    systems/
-      battle.ts
-      dialogue.ts
-      encounters.ts
-      interaction.ts
-      mindBody.ts
-      moteCircle.ts
-      movement.ts
-      quests.ts
-      save.ts
-    data/
-      bodies.ts
-      factions.ts
-      maps.ts
-      minds.ts
-      moves.ts
-      quests.ts
-    types/
-      game.ts
-      save.ts
-  assets/
-    maps/
-    sprites/
-    tilesets/
-    audio/
+src/game/domain/
+  battle/
+  circle/
+  companion/
+  dialogue/
+  inventory/
+  menu/
+  quests/
+  save/
+  world/
 ```
 
-## Scene Architecture
+Domain modules must:
+
+- Accept serializable state and content definitions.
+- Return new serializable state plus events and effects.
+- Avoid Phaser, DOM, React, timers, localStorage, and audio APIs.
+- Be covered by Bun tests.
+
+The current `src/game/systems/` modules can migrate incrementally into this shape. Do not perform a large rename-only refactor before the production shell, inventory, and quest systems require it.
+
+## Authoritative Game State
+
+Use one serializable `GameState` as the authoritative gameplay state. Phaser scenes render this state and dispatch commands against it.
+
+```typescript
+export type GameState = {
+  schemaVersion: number;
+  player: PlayerState;
+  world: WorldState;
+  circle: CircleSlot[];
+  companion: CompanionState;
+  inventory: InventoryState;
+  quests: QuestState;
+  flags: FlagState;
+  acquiredBodies: string[];
+  acquiredMinds: string[];
+  completedTrials: string[];
+  battle?: BattleState;
+  runtime: RuntimeState;
+};
+```
+
+### Durable State
+
+Saved to local storage:
+
+- Player name.
+- Current map and position.
+- Facing direction.
+- Circle slots.
+- Acquired bodies.
+- Acquired minds.
+- Inventory.
+- Quest progress.
+- Story flags.
+- Companion care state.
+- Completed Trials.
+- Options.
+- Schema version.
+
+### Ephemeral State
+
+Not saved directly:
+
+- Active Phaser objects.
+- Tweens.
+- Cameras.
+- Currently held keys.
+- Audio nodes.
+- Scene transition effects.
+- DOM nodes.
+- Runtime menu cursor positions unless explicitly required.
+
+## Command And Effect Pattern
+
+Scenes and React dispatch typed commands.
+
+```typescript
+export type GameCommand =
+  | { type: "world.move"; direction: Direction }
+  | { type: "world.interact" }
+  | { type: "dialogue.advance"; choiceId?: string }
+  | { type: "battle.chooseMove"; moveId: string }
+  | { type: "battle.useItem"; itemId: string }
+  | { type: "battle.switchMote"; slotIndex: number }
+  | { type: "battle.escape" }
+  | { type: "menu.open"; menuId: MenuId }
+  | { type: "menu.back" }
+  | { type: "inventory.use"; itemId: string; target?: InventoryTarget }
+  | { type: "quest.track"; questId: string }
+  | { type: "save.write"; slotId: string };
+```
+
+Reducers return:
+
+```typescript
+export type CommandResult = {
+  state: GameState;
+  events: GameEvent[];
+  effects: RuntimeEffect[];
+};
+```
+
+`GameEvent` is gameplay history. `RuntimeEffect` is an instruction for the presentation layer.
+
+Example effects:
+
+- Play sound.
+- Start music.
+- Fade scene.
+- Load map.
+- Start battle.
+- Open menu.
+- Close menu.
+- Show dialogue.
+- Write save.
+- Show toast.
+
+No reducer should directly call Phaser, React, DOM, localStorage, or audio APIs.
+
+## Scenes
+
+### Required Phaser Scenes
+
+```text
+BootScene
+PreloadScene
+WorldScene
+BattleScene
+UIScene
+```
+
+The current implementation only has Boot, World, and Battle. Add `PreloadScene` and `UIScene` when the asset manifest and shared menu/dialogue systems are introduced.
 
 ### BootScene
 
 Responsibilities:
 
-- Configure pixel rendering
-- Load static asset manifests
-- Load core spritesheets, tilemaps, fonts, and audio
-- Initialize game-wide registries
-- Start the Garden or World scene based on save state
+- Configure pixel rendering.
+- Initialize runtime services.
+- Load minimal boot assets.
+- Validate content registries in development.
+- Load or create save metadata.
+- Transition to `PreloadScene` or the title flow.
 
-### GardenScene
+### PreloadScene
 
 Responsibilities:
 
-- Render the player's private Garden
-- Show first companion and Circle members
-- Handle rest, feed, play, train, and exit interactions
-- Emit events for React menus when needed
+- Load asset manifests.
+- Load tilemaps, tilesets, spritesheets, fonts, and audio.
+- Expose preload failures clearly in development.
+- Start `WorldScene` and `UIScene`.
 
 ### WorldScene
 
 Responsibilities:
 
-- Render Motehaven maps
-- Handle player movement and collision
-- Process NPC interactions
-- Trigger wild encounters and trainer battles
-- Transition between maps
+- Render maps.
+- Render player and NPC sprites.
+- Animate tile movement.
+- Detect interaction targets.
+- Dispatch world commands.
+- React to domain events such as `battle.requested`, `map.transitioned`, `dialogue.started`, and `menu.opened`.
+
+World rules should move to pure systems. `WorldScene` should not decide quest progression, inventory rewards, battle rewards, or save schema behavior.
 
 ### BattleScene
 
 Responsibilities:
 
-- Present turn-based battles
-- Display active Motes, moves, HP, and battle log
-- Invoke pure battle system functions
-- Resolve rewards, acquisition, quest flags, and scene return
+- Render combatants, HP, energy, status, move menus, item menus, switch menus, and battle log.
+- Dispatch battle commands.
+- Animate battle events returned by the battle reducer.
+- Emit completion events back to the runtime.
+
+Battle math, enemy policy, rewards, and post-battle state changes stay in pure systems.
 
 ### UIScene
 
 Responsibilities:
 
-- Render canvas-native dialogue boxes and prompt menus
-- Keep dialogue usable when React overlays are hidden
-- Coordinate input priority during conversations and battles
+- Dialogue boxes.
+- Choice prompts.
+- Shared canvas-native menu renderer.
+- Interaction prompts.
+- Cutscene blocking overlay.
+- Input ownership while menus, dialogue, and cutscenes are active.
 
-## Data Model
+React may render browser-level title, settings, and save slot surfaces. Phaser `UIScene` renders in-play menus that need to layer over the game canvas.
 
-### MoteBody
+## Interaction State Machine
 
-```typescript
-export type MoteBody = {
-  id: string;
-  name: string;
-  species: string;
-  spriteKey: string;
-  baseStats: BattleStats;
-  traits: string[];
-  learnset: string[];
-  growthCurve: "steady" | "early" | "late" | "erratic";
-  compatibleMindTags: string[];
-};
-```
-
-### MoteMind
+Replace scene-local string modes with explicit state.
 
 ```typescript
-export type MoteMind = {
-  id: string;
-  name: string;
-  origin: "tessera" | "optima" | "northstar" | "asterion" | "sovereign" | "base";
-  personalityTags: string[];
-  battleStyle: "adaptive" | "efficient" | "reliable" | "experimental" | "volatile";
-  statModifiers: Partial<BattleStats>;
-  bondProfile: "warm" | "disciplined" | "steady" | "curious" | "unstable";
-  compatibilityTags: string[];
-};
-```
-
-### CircleSlot
-
-```typescript
-export type CircleSlot =
-  | { state: "empty" }
+export type InteractionState =
+  | { mode: "free-roam" }
   | {
-      state: "occupied";
-      bodyId: string;
-      mindId: string;
-      level: number;
-      experience: number;
-      bond: number;
-      currentHp: number;
+      mode: "moving";
+      direction: Direction;
+      from: GridPosition;
+      to: GridPosition;
+    }
+  | { mode: "dialogue"; dialogueId: string; nodeId: string }
+  | { mode: "menu"; menuId: MenuId }
+  | { mode: "cutscene"; cutsceneId: string; stepIndex: number }
+  | { mode: "transition"; transitionId: string }
+  | { mode: "battle" };
+```
+
+Rules:
+
+- Only one input owner is active at a time.
+- Movement input is ignored during dialogue, menu, cutscene, transition, and battle.
+- Pause can open only from allowed states.
+- Save writes happen only after reducer-confirmed durable changes.
+
+## Content Layout
+
+Production content should be data-driven and validated.
+
+Recommended layout:
+
+```text
+src/game/content/
+  assets.ts
+  bodies.ts
+  minds.ts
+  moves.ts
+  items.ts
+  maps/
+  npcs.ts
+  encounters.ts
+  battles.ts
+  dialogues.ts
+  cutscenes.ts
+  quests.ts
+  trials.ts
+```
+
+The existing `src/game/data/` files can remain while the content pipeline is introduced. New production systems should prefer the `content` terminology when a migration is already necessary.
+
+## Map Architecture
+
+During prototyping, hardcoded TypeScript maps are acceptable. For production, maps should come from Tiled JSON or generated TypeScript based on Tiled exports.
+
+```typescript
+export type MapDefinition = {
+  id: string;
+  name: string;
+  dimensions: { width: number; height: number };
+  start: GridPosition;
+  tilemapKey: string;
+  tilesets: TilesetRef[];
+  collision: CollisionLayerDefinition[];
+  npcs: NpcPlacement[];
+  transitions: MapTransition[];
+  encounterZones: EncounterZone[];
+  interactables: InteractablePlacement[];
+  scripts: MapScriptHook[];
+};
+```
+
+Content validation must ensure:
+
+- Map dimensions match tile layers.
+- Transitions target known maps and valid walkable tiles.
+- NPC ids are unique per map.
+- NPC placements reference known NPC definitions.
+- NPC positions are valid.
+- Encounter tables exist.
+- Blocked tiles and collision layers are consistent.
+- Script hooks reference known dialogue, quest, battle, item, or cutscene ids.
+
+## NPC, Dialogue, And Cutscene Architecture
+
+NPCs reference dialogue, battle, quest, or cutscene ids instead of embedding raw scene logic.
+
+```typescript
+export type NpcDefinition = {
+  id: string;
+  name: string;
+  defaultFacing: Direction;
+  spriteKey: string;
+  interaction: InteractionDefinition;
+};
+```
+
+Dialogue is content:
+
+```typescript
+export type DialogueDefinition = {
+  id: string;
+  startNodeId: string;
+  nodes: Record<string, DialogueNode>;
+};
+
+export type DialogueNode =
+  | {
+      type: "line";
+      speaker: string;
+      text: string;
+      next?: string;
+      effects?: DialogueEffect[];
+    }
+  | {
+      type: "choice";
+      prompt: string;
+      choices: DialogueChoice[];
+    }
+  | {
+      type: "end";
+      effects?: DialogueEffect[];
     };
 ```
 
-### SaveGame
+Dialogue effects may:
+
+- Set flags.
+- Start quests.
+- Advance objectives.
+- Give items.
+- Heal the Circle.
+- Open a menu.
+- Start a battle.
+- Start a cutscene.
+
+Cutscenes are interpreted sequences:
 
 ```typescript
-export type SaveGame = {
-  version: number;
-  player: {
-    name: string;
-    currentMapId: string;
-    position: { x: number; y: number };
-  };
-  circle: CircleSlot[];
-  inventory: Record<string, number>;
-  questFlags: Record<string, boolean | number | string>;
-  acquiredBodies: string[];
-  acquiredMinds: string[];
+export type CutsceneStep =
+  | { type: "say"; dialogueId: string }
+  | { type: "moveActor"; actorId: string; path: GridPosition[] }
+  | { type: "faceActor"; actorId: string; direction: Direction }
+  | { type: "wait"; ms: number }
+  | { type: "playSound"; soundId: string }
+  | { type: "setFlag"; flag: string; value: FlagValue }
+  | { type: "giveReward"; rewardId: string }
+  | { type: "startBattle"; battleId: string };
+```
+
+Cutscenes must not store Phaser objects in save data. Previously completed cutscenes should be skippable where appropriate.
+
+## Quest Architecture
+
+Replace freeform quest flags with typed quest definitions and progress state.
+
+```typescript
+export type QuestDefinition = {
+  id: string;
+  title: string;
+  category:
+    | "main"
+    | "trial"
+    | "companion"
+    | "collection"
+    | "research"
+    | "faction"
+    | "errand"
+    | "hidden";
+  objectives: QuestObjective[];
+  rewards: RewardDefinition[];
+  prerequisites?: Condition[];
+};
+
+export type QuestProgress = {
+  state: "inactive" | "available" | "active" | "readyToTurnIn" | "completed" | "failed";
+  objectiveProgress: Record<string, number | boolean>;
+  trackedObjectiveId?: string;
 };
 ```
 
-## Battle System
+Flags may still exist for simple story gates, but quest progress should use quest ids and objective ids.
 
-The battle system should be deterministic and testable. Rendering code should submit commands such as `selectMove`, `useItem`, `switchMote`, or `attemptEscape`; the battle system should return a new state plus a list of display events.
+Quest reducer responsibilities:
 
-```text
-Battle input
-  Player action
-  Enemy action policy
-  Current battle state
+- Start quests.
+- Advance objective progress.
+- Detect completion.
+- Apply rewards.
+- Emit story and UI events.
+- Persist progress safely.
 
-Battle reducer
-  Validate action
-  Determine turn order
-  Apply move effects
-  Apply mind/body modifiers
-  Apply status effects
-  Check win/loss
+## Inventory Architecture
 
-Battle output
-  Next battle state
-  Ordered battle events
+Inventory should be backed by item definitions.
+
+```typescript
+export type ItemDefinition = {
+  id: string;
+  name: string;
+  category:
+    | "body"
+    | "mind-license"
+    | "care"
+    | "battle"
+    | "key"
+    | "material"
+    | "trial-mark";
+  description: string;
+  stackLimit: number;
+  usableFrom: Array<"world" | "battle" | "menu" | "garden">;
+  effect?: ItemEffect;
+};
+
+export type InventoryState = {
+  items: Record<string, number>;
+  currency: Record<string, number>;
+};
 ```
 
-Enemy AI for the vertical slice should be simple and deterministic:
+Body and mind acquisition can remain separate collections for rules, but any visible reward should have an item or collection definition for UI consistency.
 
-- Wild Motes choose weighted moves based on HP and move role.
-- Optima trainers prefer efficient damage and finishing moves.
-- Tessera trainers prefer bond/support moves when threatened.
-- Sovereign encounters can use volatile high-risk moves with clear narrative framing.
+Inventory reducer responsibilities:
+
+- Add items.
+- Remove items.
+- Validate counts and stack limits.
+- Use items in legal contexts.
+- Apply item effects.
+- Emit feedback for invalid use.
+
+## Menu Architecture
+
+Menus should use shared declarative models.
+
+```typescript
+export type MenuModel = {
+  id: MenuId;
+  title?: string;
+  items: MenuItem[];
+  selectedIndex: number;
+  parent?: MenuId;
+};
+
+export type MenuItem = {
+  id: string;
+  label: string;
+  disabled?: boolean;
+  description?: string;
+  command?: GameCommand;
+};
+```
+
+The same model should drive:
+
+- Pause menu.
+- Garden actions.
+- Circle management.
+- Mind assignment.
+- Inventory.
+- Quest log.
+- Battle commands.
+- Battle moves.
+- Battle items.
+- Switch menu.
+- Save/settings menus.
+
+All menu navigation should share confirm, cancel, up, down, left, right semantics across keyboard and touch controls.
+
+## Save Architecture
+
+Keep localStorage for the client-only build, behind a storage service.
+
+Requirements:
+
+- Every save has `schemaVersion`.
+- Every load validates and migrates before use.
+- Invalid saves are ignored or quarantined, never partially applied.
+- Save data contains no Phaser, React, DOM, audio, or function references.
+- Writes happen after reducer-confirmed durable state changes.
+- Autosave boundaries are explicit.
+- Manual save confirms slot, timestamp, and location.
+
+Autosave should run after:
+
+- Map transitions.
+- Battle resolution.
+- Quest completion.
+- Garden actions.
+- Inventory changes.
+- Circle assignment.
+- Trial completion.
+
+Use existing manual validation or migrate content/save validation to Zod consistently. Since `zod` is already a dependency, prefer Zod for new content schemas and save schemas when touching those systems.
+
+## Battle Architecture
+
+Battle must become a command reducer, not a scene procedure.
+
+```typescript
+export type BattleCommand =
+  | { type: "chooseMove"; actor: BattleSide; moveId: string }
+  | { type: "useItem"; actor: BattleSide; itemId: string }
+  | { type: "switch"; actor: BattleSide; slotIndex: number }
+  | { type: "escape"; actor: BattleSide };
+```
+
+Battle reducer responsibilities:
+
+- Validate command legality.
+- Enforce accuracy if accuracy is part of visible rules.
+- Enforce energy or move limits if energy is part of visible rules.
+- Apply turn order.
+- Apply damage, healing, shield, and status.
+- Apply mind/body modifiers.
+- Select enemy actions through policy adapters.
+- Emit ordered battle events.
+- Determine outcome.
+- Determine rewards.
+- Apply post-battle state through a separate reward/progression reducer.
+
+Battle scene responsibilities:
+
+- Render state.
+- Render command menus.
+- Dispatch commands.
+- Animate events.
+- Show result and reward feedback.
+- Return to world through runtime effects.
 
 ## Mind Adapter Boundary
 
-Real local AI should not be required for the first slice. Add an adapter boundary for future integration:
+Real local AI is not required for the first production chapter. Keep a future-facing adapter boundary with deterministic fallback behavior.
 
 ```typescript
 export type MindDecisionContext = {
-  battleState?: unknown;
-  relationshipState?: unknown;
+  battleState?: BattleState;
+  relationshipState?: CompanionState;
   recentEvents: string[];
+  questState?: QuestState;
 };
 
 export type MindAdapter = {
@@ -259,67 +635,126 @@ export type MindAdapter = {
 
 Initial implementation:
 
-- `ProfileMindAdapter`: deterministic dialogue and battle tendencies from local data.
+- `ProfileMindAdapter`: deterministic dialogue and battle tendencies from local content.
 
-Future implementation:
+Future implementations:
 
 - `LocalModelMindAdapter`: optional local model inference.
 - `FallbackMindAdapter`: safe base behavior when model access is unavailable.
 
 ## Asset Pipeline
 
-- Use original pixel art assets.
-- Author maps in Tiled.
-- Export maps as JSON.
-- Store source map files and exported map JSON in `src/assets/maps/` or `public/assets/maps/`.
-- Use fixed-size spritesheets for characters and Motes.
-- Keep tiles and sprites crisp with nearest-neighbor rendering.
+Placeholder assets are acceptable, but asset ids must be stable.
 
-## Persistence
+Required manifest categories:
 
-Use browser local storage for the first slice. Wrap persistence behind a save service so the storage backend can change later.
+- Tilesets.
+- Tilemaps.
+- Character sprites.
+- Mote overworld sprites.
+- Mote battle sprites.
+- Portraits.
+- UI frames.
+- Fonts.
+- Sound effects.
+- Music loops.
 
-Requirements:
+Recommended pixel direction:
 
-- Version every save file.
-- Validate loaded saves before applying them.
-- Provide migration functions when save schema changes.
-- Keep save data free of Phaser objects.
+- Preserve crisp nearest-neighbor rendering.
+- Keep tile size stable.
+- Keep overworld sprites readable at the configured viewport.
+- Keep UI frames and text boxes consistent.
+- Avoid changing gameplay ids when replacing placeholder assets.
+
+Asset validation must detect missing keys before runtime play.
+
+## Data Validation
+
+Add content validation tests that run in `bun test`.
+
+Validate:
+
+- Body ids are unique.
+- Body learnsets reference known moves.
+- Body sprite keys exist in the asset manifest.
+- Mind ids are unique.
+- Mind origins are known factions.
+- Move ids are unique.
+- Item ids are unique.
+- Item effects reference known effect handlers.
+- Battle policies are registered.
+- Map transitions target known maps.
+- Encounter tables reference known bodies.
+- NPCs reference known dialogue, battle, quest, or cutscene ids.
+- Trials reference known body and mind ids.
+- Rewards reference known item, body, mind, or currency ids.
+- Quest objectives reference known trigger types.
+- Dialogue graphs have valid `next` links and reachable ends.
+- Save migrations produce valid current saves.
 
 ## Testing Strategy
 
-Use Bun tests for:
+### Pure Unit Tests
 
-- Battle damage and turn-order calculations
-- Mind/body compatibility scoring
-- Mote Circle slot rules
-- Encounter table selection
-- Save serialization, validation, and migration
-- Quest flag transitions
+- Battle reducer.
+- Enemy policies.
+- Status effects.
+- Energy and accuracy, if enabled.
+- Mind/body compatibility.
+- Circle slot rules.
+- Garden care rules.
+- Quest objective transitions.
+- Inventory effects.
+- Dialogue graph traversal.
+- Cutscene interpreter.
+- Save validation and migration.
+- Content registry validation.
 
-Use browser-based smoke checks for:
+### Integration Tests
 
-- Canvas mounts successfully
-- Garden scene renders
-- World map renders
-- Player can move without layout shifts
-- Battle scene opens and exits
+- World command reducer movement and transitions.
+- NPC interaction starts correct dialogue, cutscene, battle, or menu.
+- Battle result applies rewards and quest progress.
+- Acquired body assignment updates Circle and inventory correctly.
+- Save slot migration from the current single-save format.
 
-## Build and Validation
+### Browser Smoke Tests
 
-Before completing implementation work, run:
+Use the in-app browser or Playwright-style checks for:
 
-```bash
-bun run check
-bun run typecheck
-bun run test
-bun run build
-```
+- Title to new game.
+- Continue/load save.
+- Canvas mounts.
+- Boot to world.
+- Player movement.
+- Dialogue open, advance, and close.
+- Pause menu open and close.
+- Inventory item use.
+- Quest log update.
+- Garden menu interaction.
+- Wild encounter to battle.
+- Battle win and return to world.
+- Trial completion.
+- Mobile virtual controls.
+- Desktop and mobile viewport text fit.
 
-The project also exposes:
+## Extensibility Decisions
 
-```bash
-bun run validate
-```
+- New regions are added through map and content definitions, not new scene classes.
+- New NPC behavior is added through dialogue, cutscene, quest, and interaction hooks.
+- New battle mechanics are added through reducer effects and event types.
+- New item behavior is added through typed item effects.
+- New factions are content plus enemy policy modules.
+- Optional local AI integrates only through the `MindAdapter` boundary.
+- Art and audio replacement happens through manifests without changing domain systems.
 
-but the required validation sequence should be run explicitly when preparing a task for completion.
+## Architecture Risks
+
+- Scene bloat will slow every future feature unless UI, dialogue, quests, inventory, and battle orchestration are extracted.
+- Freeform flags will become unmaintainable as soon as multiple questlines overlap.
+- Hardcoded maps are fast now but will block larger content production.
+- Battle data already exposes accuracy and energy, but rules do not enforce them. This creates design and UI mismatch.
+- Without content validation, missing ids will surface as runtime errors during play.
+- Without browser smoke tests, pure tests will miss Phaser lifecycle, mobile input, and text layout regressions.
+- Asset replacement needs a manifest boundary before real art and audio production starts, otherwise content ids and sprite keys will drift.

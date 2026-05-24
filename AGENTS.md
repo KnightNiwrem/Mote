@@ -61,6 +61,10 @@ bun run check && bun run typecheck && bun run test && bun run build
 
 Run these commands in sequence. If any fail, fix the issues before proceeding.
 
+## Git Commit Guidelines
+
+- Agents must create commits with `git commit --no-gpg-sign`. Agents cannot authenticate GPG signing prompts, so signed commits will fail.
+
 ## Code Style Guidelines
 
 ### TypeScript
