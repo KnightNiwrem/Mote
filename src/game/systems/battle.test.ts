@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { MOTE_MOVES } from "@/game/data/moves";
+import { BODY_RESEARCH_QUEST_ID, MAIN_QUEST_ID } from "@/game/data/quests";
 import { getOccupiedCircleSlots } from "@/game/systems/moteCircle";
 import type { OccupiedCircleSlot } from "@/game/types/save";
 import {
@@ -130,6 +131,10 @@ test("battle result updates saved HP, experience, and battle flags", () => {
   expect(nextSave.questFlags["battle.wildWins"]).toBe(1);
   expect(nextSave.acquiredBodies).toEqual(["glowbud", "reedling"]);
   expect(nextSave.inventory[getBodyInventoryKey("reedling")]).toBe(1);
+  expect(
+    nextSave.quests[MAIN_QUEST_ID]?.objectiveProgress["acquire-wild-body"],
+  ).toBe(1);
+  expect(nextSave.quests[BODY_RESEARCH_QUEST_ID]?.state).toBe("completed");
 });
 
 test("wild battle rewards only newly acquired bodies", () => {

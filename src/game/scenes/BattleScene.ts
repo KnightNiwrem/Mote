@@ -3,10 +3,16 @@ import { ensurePolishTextures } from "@/game/art";
 import { playGameSound, primeAudio, startMusicLoop } from "@/game/audio";
 import { GAME_VIEWPORT } from "@/game/config";
 import { MOTE_BODIES } from "@/game/data/bodies";
+import { SOVEREIGN_HINT_CUTSCENE_ID } from "@/game/data/cutscenes";
+import { WILD_BODY_DIALOGUE_ID } from "@/game/data/dialogue";
 import type { Direction, GridPosition, WorldMapId } from "@/game/data/maps";
 import { MOTE_MOVES } from "@/game/data/moves";
 import { FIRST_TRIAL_ID, TRIALS, type TrialId } from "@/game/data/trials";
-import { GAME_CONTROL_EVENT, type GameControlInput } from "@/game/input";
+import {
+  dispatchGameRuntimeEvent,
+  GAME_CONTROL_EVENT,
+  type GameControlInput,
+} from "@/game/input";
 import {
   applyBattleResultToSave,
   assignAcquiredBodyToCircle,
@@ -15,6 +21,11 @@ import {
   getNewlyAcquiredBodyId,
   resolveBattleTurn,
 } from "@/game/systems/battle";
+import { getCutsceneSummary } from "@/game/systems/cutscenes";
+import {
+  getDialogueDefinition,
+  getDialogueView,
+} from "@/game/systems/dialogue";
 import { getOccupiedCircleSlots } from "@/game/systems/moteCircle";
 import {
   createInitialSaveGame,
@@ -108,6 +119,7 @@ export class BattleScene extends Phaser.Scene {
 
   create() {
     this.cameras.main.setBackgroundColor("#183329");
+    dispatchGameRuntimeEvent({ type: "busy", canPause: false });
     ensurePolishTextures(this);
     startMusicLoop(this.battleKind === "trial" ? "trial" : "battle");
     fadeInScene(this);
@@ -428,8 +440,20 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private updateAssignmentPromptUi(bodyId: string) {
+    const definition = getDialogueDefinition(WILD_BODY_DIALOGUE_ID);
+    const view = getDialogueView(
+      definition,
+      definition.startNodeId,
+      this.currentSave,
+      {
+        bodyName: getBodyName(bodyId),
+      },
+    );
+
     this.logText?.setText(
-      `New body acquired: ${getBodyName(bodyId)}.\nAssign to Circle?`,
+      view.type === "line"
+        ? `${view.text}\nAssign this body?`
+        : `New body acquired: ${getBodyName(bodyId)}.\nAssign this body?`,
     );
     this.hintText?.setText("A Confirm");
 
@@ -534,6 +558,9 @@ export class BattleScene extends Phaser.Scene {
         primeAudio();
         this.touchActionQueued = true;
         break;
+      case "pause":
+      case "sync-save":
+        break;
     }
   };
 }
@@ -585,7 +612,7 @@ function getTrialResultMessage(
   const trial = TRIALS[trialId];
 
   if (battleState.outcome === "player-win") {
-    return `${trial.victoryMessage}\n${trial.sovereignHint}`;
+    return `${trial.victoryMessage}\n${getCutsceneSummary(SOVEREIGN_HINT_CUTSCENE_ID)}`;
   }
 
   return "Cal Venn: Output below threshold. Return when your Circle is sharper.";

@@ -1,8 +1,11 @@
 import { MOTE_BODIES } from "@/game/data/bodies";
+import { getBodyItemId } from "@/game/data/items";
 import { BASE_MIND_ID, MOTE_MINDS } from "@/game/data/minds";
 import { MOTE_MOVES } from "@/game/data/moves";
+import { BODY_RESEARCH_QUEST_ID } from "@/game/data/quests";
 import { FIRST_TRIAL_ID, TRIALS, type TrialId } from "@/game/data/trials";
 import { canUnlockWildBody } from "@/game/systems/encounters";
+import { addInventoryItem } from "@/game/systems/inventory";
 import {
   calculateMindBodyStats,
   getMindMoveModifier,
@@ -12,6 +15,10 @@ import {
   createCircleSlot,
   updateCircleSlot,
 } from "@/game/systems/moteCircle";
+import {
+  advanceQuestObjective,
+  completeQuestAndClaimRewards,
+} from "@/game/systems/quests";
 import type {
   BattleCombatant,
   BattleEvent,
@@ -50,7 +57,6 @@ export type CreateTrialBattleStateInput = {
 const DEFAULT_WILD_BODY_ID = "reedling";
 const MAX_LOG_LINES = 4;
 const SUPPORT_SHIELD = 5;
-const BODY_INVENTORY_PREFIX = "body:";
 
 export function createWildBattleState({
   playerSlot,
@@ -300,7 +306,7 @@ export function applyBattleResultToSave(
   const wonBattle = battleState.outcome === "player-win";
   const acquiredBodyId = getNewlyAcquiredBodyId(save, battleState);
 
-  return {
+  let nextSave: SaveGame = {
     ...save,
     circle: updateCircleSlot(save.circle, 0, (slot) =>
       slot.state === "occupied"
@@ -324,6 +330,22 @@ export function applyBattleResultToSave(
       ? [...save.acquiredBodies, acquiredBodyId]
       : save.acquiredBodies,
   };
+
+  if (!acquiredBodyId) {
+    return nextSave;
+  }
+
+  nextSave = advanceQuestObjective(nextSave, {
+    type: "advance",
+    trigger: "body-acquired",
+    targetId: acquiredBodyId,
+  });
+
+  if (nextSave.quests[BODY_RESEARCH_QUEST_ID]?.state === "readyToTurnIn") {
+    nextSave = completeQuestAndClaimRewards(nextSave, BODY_RESEARCH_QUEST_ID);
+  }
+
+  return nextSave;
 }
 
 export function getNewlyAcquiredBodyId(
@@ -365,19 +387,14 @@ export function assignAcquiredBodyToCircle(
 }
 
 export function getBodyInventoryKey(bodyId: string): string {
-  return `${BODY_INVENTORY_PREFIX}${bodyId}`;
+  return getBodyItemId(bodyId);
 }
 
 function incrementBodyInventory(
   inventory: SaveGame["inventory"],
   bodyId: string,
 ): SaveGame["inventory"] {
-  const inventoryKey = getBodyInventoryKey(bodyId);
-
-  return {
-    ...inventory,
-    [inventoryKey]: (inventory[inventoryKey] ?? 0) + 1,
-  };
+  return addInventoryItem(inventory, getBodyInventoryKey(bodyId)).inventory;
 }
 
 function applyMove(

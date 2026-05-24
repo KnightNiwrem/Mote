@@ -6,7 +6,12 @@ import type {
   MoteMind,
   MoveDefinition,
 } from "@/game/types/game";
-import type { CircleSlot, OccupiedCircleSlot } from "@/game/types/save";
+import type {
+  CircleSlot,
+  OccupiedCircleSlot,
+  SaveGame,
+} from "@/game/types/save";
+import { updateCircleSlot } from "./moteCircle";
 
 export const INITIAL_ACQUIRED_MIND_IDS = [
   BASE_MIND_ID,
@@ -136,7 +141,9 @@ export function normalizeAcquiredMindIds(mindIds: readonly string[]): string[] {
 }
 
 export function getAvailableMindIds(mindIds: readonly string[]): string[] {
-  return normalizeAcquiredMindIds(mindIds);
+  return [
+    ...new Set(mindIds.filter((mindId) => Object.hasOwn(MOTE_MINDS, mindId))),
+  ];
 }
 
 export function assignMindToCircleSlot(
@@ -156,6 +163,33 @@ export function assignMindToCircleSlot(
     ...slot,
     mindId,
     currentHp: Math.min(slot.currentHp, stats.hp),
+  };
+}
+
+export function assignAcquiredMindToCircle(
+  save: SaveGame,
+  slotIndex: number,
+  mindId: string,
+): SaveGame {
+  const availableMindIds = getAvailableMindIds(save.acquiredMinds);
+
+  if (!availableMindIds.includes(mindId)) {
+    throw new Error("Cannot assign a mind before it is acquired");
+  }
+
+  const slot = save.circle[slotIndex];
+  if (slot?.state !== "occupied") {
+    throw new Error("Cannot assign a mind to an empty Circle slot");
+  }
+
+  return {
+    ...save,
+    acquiredMinds: availableMindIds,
+    circle: updateCircleSlot(save.circle, slotIndex, (circleSlot) =>
+      circleSlot.state === "occupied"
+        ? assignMindToCircleSlot(circleSlot, mindId)
+        : circleSlot,
+    ),
   };
 }
 

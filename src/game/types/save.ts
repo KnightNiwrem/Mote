@@ -1,4 +1,5 @@
 import type { GridPosition, WorldMapId } from "@/game/data/maps";
+import type { QuestState } from "@/game/data/quests";
 
 export type CircleSlot =
   | { state: "empty" }
@@ -26,6 +27,41 @@ export type SaveGame = {
   circle: CircleSlot[];
   inventory: Record<string, number>;
   questFlags: Record<string, QuestFlagValue>;
+  quests: QuestState;
   acquiredBodies: string[];
   acquiredMinds: string[];
 };
+
+export type SaveSlotId = "slot-1" | "slot-2" | "slot-3";
+
+export type SaveSlotMetadata = {
+  playerName: string;
+  mapId: WorldMapId;
+  mapName: string;
+  chapterLabel: string;
+  updatedAt: string;
+  acquiredBodyCount: number;
+  trialMarks: string[];
+};
+
+export type SaveSlotRecord = {
+  version: number;
+  slotId: SaveSlotId;
+  metadata: SaveSlotMetadata;
+  save: SaveGame;
+};
+
+export type SaveSlotState =
+  | {
+      status: "empty";
+      slotId: SaveSlotId;
+    }
+  | {
+      status: "valid";
+      slotId: SaveSlotId;
+      record: SaveSlotRecord;
+    }
+  | {
+      status: "corrupt";
+      slotId: SaveSlotId;
+    };

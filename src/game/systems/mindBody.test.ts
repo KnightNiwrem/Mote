@@ -91,8 +91,5 @@ test("Circle mind assignment clamps HP and normalizes available minds", () => {
   expect(slot.currentHp).toBe(21);
   expect(getAvailableMindIds(["base-mind", "missing-mind"])).toEqual([
     "base-mind",
-    "luma-companion",
-    "optima-focus",
-    "northstar-base",
   ]);
 });

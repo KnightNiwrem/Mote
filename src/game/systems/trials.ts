@@ -1,10 +1,21 @@
+import { SOVEREIGN_HINT_CUTSCENE_ID } from "@/game/data/cutscenes";
+import { MAIN_QUEST_ID, TRIAL_QUEST_ID } from "@/game/data/quests";
 import { TRIALS, type TrialId } from "@/game/data/trials";
+import { runCutscene } from "@/game/systems/cutscenes";
 import { updateCircleSlot } from "@/game/systems/moteCircle";
+import {
+  applyQuestActionToSave,
+  completeQuestAndClaimRewards,
+  isQuestCompleted,
+} from "@/game/systems/quests";
 import type { BattleState } from "@/game/types/battle";
 import type { SaveGame } from "@/game/types/save";
 
 export function isTrialCompleted(save: SaveGame, trialId: TrialId): boolean {
-  return save.questFlags[TRIALS[trialId].completionFlag] === true;
+  return (
+    save.questFlags[TRIALS[trialId].completionFlag] === true ||
+    isQuestCompleted(save.quests, TRIAL_QUEST_ID)
+  );
 }
 
 export function applyTrialBattleResultToSave(
@@ -20,7 +31,7 @@ export function applyTrialBattleResultToSave(
       ? 1
       : Math.max(1, battleState.player.currentHp);
 
-  return {
+  let nextSave: SaveGame = {
     ...save,
     circle: updateCircleSlot(save.circle, 0, (slot) =>
       slot.state === "occupied"
@@ -33,23 +44,32 @@ export function applyTrialBattleResultToSave(
           }
         : slot,
     ),
-    inventory:
-      wonTrial && !alreadyCompleted
-        ? {
-            ...save.inventory,
-            [trial.rewardInventoryKey]:
-              (save.inventory[trial.rewardInventoryKey] ?? 0) + 1,
-          }
-        : save.inventory,
     questFlags: {
       ...save.questFlags,
       "trial.first.lastOutcome": battleState.outcome,
-      ...(wonTrial
-        ? {
-            [trial.completionFlag]: true,
-            [trial.storyHintFlag]: "introduced",
-          }
-        : {}),
     },
   };
+
+  if (!wonTrial || alreadyCompleted) {
+    return nextSave;
+  }
+
+  nextSave = applyQuestActionToSave(nextSave, {
+    type: "start",
+    questId: TRIAL_QUEST_ID,
+  });
+  nextSave = applyQuestActionToSave(nextSave, {
+    type: "advance",
+    trigger: "trial-completed",
+    targetId: trialId,
+  });
+  nextSave = completeQuestAndClaimRewards(nextSave, TRIAL_QUEST_ID);
+  nextSave = runCutscene(nextSave, SOVEREIGN_HINT_CUTSCENE_ID).save;
+  nextSave = applyQuestActionToSave(nextSave, {
+    type: "advance",
+    trigger: "sovereign-hint",
+    targetId: "sovereign-weights",
+  });
+
+  return completeQuestAndClaimRewards(nextSave, MAIN_QUEST_ID);
 }

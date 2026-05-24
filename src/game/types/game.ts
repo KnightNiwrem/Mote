@@ -60,3 +60,34 @@ export type FactionDefinition = {
   philosophy: string;
   gameplayIdentity: string[];
 };
+
+export type ItemCategory =
+  | "body"
+  | "mind-license"
+  | "care"
+  | "battle"
+  | "key"
+  | "material"
+  | "trial-mark";
+
+export type InventoryUseContext = "world" | "battle" | "menu" | "garden";
+
+export type ItemEffect =
+  | {
+      type: "heal-circle";
+      amount: number;
+    }
+  | {
+      type: "bond-circle";
+      amount: number;
+    };
+
+export type ItemDefinition = {
+  id: string;
+  name: string;
+  category: ItemCategory;
+  description: string;
+  stackLimit: number;
+  usableFrom: InventoryUseContext[];
+  effect?: ItemEffect;
+};

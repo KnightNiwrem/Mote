@@ -2,6 +2,7 @@ import * as Phaser from "phaser";
 import { CHARACTER_TEXTURE_KEYS, ensurePolishTextures } from "@/game/art";
 import { playGameSound, primeAudio, startMusicLoop } from "@/game/audio";
 import { MOTE_BODIES } from "@/game/data/bodies";
+import type { DialogueId } from "@/game/data/dialogue";
 import {
   type Direction,
   type GridPosition,
@@ -14,8 +15,12 @@ import {
   type WorldNpc,
 } from "@/game/data/maps";
 import { MOTE_MINDS } from "@/game/data/minds";
-import { FIRST_TRIAL_ID, TRIALS, type TrialId } from "@/game/data/trials";
-import { GAME_CONTROL_EVENT, type GameControlInput } from "@/game/input";
+import type { TrialId } from "@/game/data/trials";
+import {
+  dispatchGameRuntimeEvent,
+  GAME_CONTROL_EVENT,
+  type GameControlInput,
+} from "@/game/input";
 import {
   applyGardenAction,
   COMPANION_NAME,
@@ -25,6 +30,13 @@ import {
   type GardenActionDefinition,
   getCompanionDialogue,
 } from "@/game/systems/companion";
+import {
+  advanceDialogue,
+  type DialogueCommand,
+  type DialogueVariables,
+  type DialogueView,
+  getDialogueStartView,
+} from "@/game/systems/dialogue";
 import { rollWildEncounter } from "@/game/systems/encounters";
 import {
   assignMindToCircleSlot,
@@ -42,12 +54,12 @@ import {
   findTransitionAt,
   getNextTile,
 } from "@/game/systems/movement";
+import { advanceQuestObjective } from "@/game/systems/quests";
 import {
   createInitialSaveGame,
   loadOrCreateSaveGame,
   saveGame,
 } from "@/game/systems/save";
-import { isTrialCompleted } from "@/game/systems/trials";
 import type { SaveGame } from "@/game/types/save";
 import { fadeInScene, fadeToScene } from "./transitions";
 
@@ -133,7 +145,11 @@ export class WorldScene extends Phaser.Scene {
   private interactionMode: InteractionMode = "none";
   private companionState: CompanionState = createInitialCompanionState();
   private currentSave: SaveGame = createInitialSaveGame();
-  private pendingTrialId: TrialId | null = null;
+  private activeDialogueId: DialogueId | null = null;
+  private activeDialogueNodeId: string | null = null;
+  private activeDialogueVariables: DialogueVariables = {};
+  private pausedByShell = false;
+  private lastRuntimeStateKey = "";
 
   constructor() {
     super("World");
@@ -152,7 +168,11 @@ export class WorldScene extends Phaser.Scene {
     this.selectedGardenActionIndex = 0;
     this.selectedCircleIndex = 0;
     this.interactionMode = "none";
-    this.pendingTrialId = null;
+    this.activeDialogueId = null;
+    this.activeDialogueNodeId = null;
+    this.activeDialogueVariables = {};
+    this.pausedByShell = false;
+    this.lastRuntimeStateKey = "";
     this.companionState = this.createCompanionStateFromSave();
     this.persistProgress();
   }
@@ -170,9 +190,16 @@ export class WorldScene extends Phaser.Scene {
     this.createControls();
     this.createUi();
     this.configureCamera();
+    this.publishRuntimeState(true);
   }
 
   override update() {
+    this.publishRuntimeState();
+
+    if (this.pausedByShell) {
+      return;
+    }
+
     if (this.isInteractPressed()) {
       if (this.interactionMode === "garden-menu") {
         this.applySelectedGardenAction();
@@ -185,25 +212,16 @@ export class WorldScene extends Phaser.Scene {
       }
 
       if (this.interactionMode !== "none") {
-        if (this.pendingTrialId) {
-          const trialId = this.pendingTrialId;
-          this.pendingTrialId = null;
-          this.startTrialBattle(trialId);
-          return;
-        }
-
-        this.hideDialogue();
+        this.advanceActiveDialogue();
         return;
       }
 
       const npc = findNpcFacing(this.worldMap, this.playerTile, this.facing);
       if (npc) {
-        if (npc.kind === "companion") {
-          this.showCompanionMenu();
-        } else if (npc.kind === "wild-mote") {
+        if (npc.kind === "wild-mote") {
           this.startWildBattle(npc.battleBodyId ?? "reedling");
-        } else if (npc.kind === "trial-rival") {
-          this.showTrialRivalDialogue(npc);
+        } else if (npc.dialogueId) {
+          this.startDialogue(npc.dialogueId);
         } else {
           this.showDialogue(npc);
         }
@@ -403,6 +421,11 @@ export class WorldScene extends Phaser.Scene {
       selectedAction.id,
       this.getActiveBondGainModifier(),
     );
+    this.currentSave = advanceQuestObjective(this.currentSave, {
+      type: "advance",
+      trigger: "garden-action",
+      targetId: selectedAction.id,
+    });
     this.persistProgress();
     playGameSound("confirm");
     this.gardenMenu?.setVisible(false);
@@ -414,6 +437,11 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private showCircleMenu() {
+    this.currentSave = advanceQuestObjective(this.currentSave, {
+      type: "advance",
+      trigger: "circle-managed",
+    });
+    this.persistProgress();
     this.selectedCircleIndex = 0;
     this.interactionMode = "circle-menu";
     this.gardenMenu?.setVisible(false);
@@ -709,6 +737,7 @@ export class WorldScene extends Phaser.Scene {
     }
 
     playGameSound("transition");
+    this.publishBusyState();
     fadeToScene(this, "World", {
       mapId: transition.toMapId,
       playerTile: transition.toPosition,
@@ -766,6 +795,7 @@ export class WorldScene extends Phaser.Scene {
     };
 
     saveGame(this.currentSave);
+    this.publishRuntimeState(true);
   }
 
   private updatePrompt() {
@@ -785,6 +815,71 @@ export class WorldScene extends Phaser.Scene {
     this.showDialogueText(npc.name, npc.dialogue[0] ?? "", "A");
   }
 
+  private startDialogue(dialogueId: DialogueId) {
+    const { nodeId, view } = getDialogueStartView(dialogueId, this.currentSave);
+
+    this.activeDialogueId = dialogueId;
+    this.activeDialogueNodeId = nodeId;
+    this.activeDialogueVariables = {};
+    playGameSound("talk");
+    this.showDialogueView(view);
+  }
+
+  private advanceActiveDialogue() {
+    if (!this.activeDialogueId || !this.activeDialogueNodeId) {
+      this.hideDialogue();
+      return;
+    }
+
+    const result = advanceDialogue({
+      dialogueId: this.activeDialogueId,
+      nodeId: this.activeDialogueNodeId,
+      save: this.currentSave,
+      variables: this.activeDialogueVariables,
+    });
+
+    this.currentSave = result.save;
+    this.persistProgress();
+
+    if (result.ended) {
+      const commands = result.commands;
+
+      this.hideDialogue();
+      this.handleDialogueCommands(commands);
+      return;
+    }
+
+    this.activeDialogueNodeId = result.nextNodeId;
+    this.showDialogueView(result.view);
+
+    if (result.commands.length > 0) {
+      this.handleDialogueCommands(result.commands);
+    }
+  }
+
+  private showDialogueView(view: DialogueView) {
+    if (view.type === "line") {
+      this.showDialogueText(view.speaker, view.text, "A");
+      return;
+    }
+
+    if (view.type === "choice") {
+      this.showDialogueText(
+        "Choice",
+        [
+          view.prompt,
+          ...view.choices.map(
+            (choice, index) => `${index === 0 ? ">" : " "} ${choice.label}`,
+          ),
+        ].join("\n"),
+        "A Select",
+      );
+      return;
+    }
+
+    this.hideDialogue();
+  }
+
   private showDialogueText(speaker: string, message: string, hint: string) {
     this.interactionMode = "dialogue";
     this.dialogueText?.setText(
@@ -795,24 +890,10 @@ export class WorldScene extends Phaser.Scene {
     this.promptText?.setVisible(false);
   }
 
-  private showTrialRivalDialogue(npc: WorldNpc) {
-    const trialId = npc.trialId ?? FIRST_TRIAL_ID;
-    const trial = TRIALS[trialId];
-
-    if (isTrialCompleted(this.currentSave, trialId)) {
-      this.pendingTrialId = null;
-      this.showDialogueText(npc.name, trial.completedDialogue, "A");
-      return;
-    }
-
-    this.pendingTrialId = trialId;
-    playGameSound("talk");
-    this.showDialogueText(npc.name, trial.introDialogue, "A Challenge");
-  }
-
   private startWildBattle(enemyBodyId: string) {
     this.persistProgress();
     playGameSound("encounter");
+    this.publishBusyState();
     fadeToScene(this, "Battle", {
       returnMapId: this.worldMap.id,
       returnTile: this.playerTile,
@@ -823,6 +904,7 @@ export class WorldScene extends Phaser.Scene {
   private startTrialBattle(trialId: TrialId) {
     this.persistProgress();
     playGameSound("encounter");
+    this.publishBusyState();
     fadeToScene(this, "Battle", {
       returnMapId: this.worldMap.id,
       returnTile: this.playerTile,
@@ -833,17 +915,51 @@ export class WorldScene extends Phaser.Scene {
 
   private hideDialogue() {
     this.interactionMode = "none";
-    this.pendingTrialId = null;
+    this.activeDialogueId = null;
+    this.activeDialogueNodeId = null;
+    this.activeDialogueVariables = {};
     this.dialogueBox?.setVisible(false);
     this.gardenMenu?.setVisible(false);
     this.updatePrompt();
+  }
+
+  private handleDialogueCommands(commands: readonly DialogueCommand[]) {
+    for (const command of commands) {
+      if (command.type === "openMenu") {
+        if (command.menu === "garden") {
+          this.showCompanionMenu();
+        } else if (command.menu === "circle") {
+          this.showCircleMenu();
+        }
+      } else if (command.type === "startBattle") {
+        if (command.battleKind === "trial" && command.trialId) {
+          this.startTrialBattle(command.trialId);
+        } else if (command.battleKind === "wild" && command.enemyBodyId) {
+          this.startWildBattle(command.enemyBodyId);
+        }
+      }
+    }
   }
 
   private readonly handleGameControl = (event: Event) => {
     const input = (event as CustomEvent<GameControlInput>).detail;
 
     switch (input.type) {
+      case "pause":
+        this.pausedByShell = input.paused;
+        this.touchDirection = null;
+        this.publishRuntimeState(true);
+        break;
+      case "sync-save":
+        this.currentSave = input.save;
+        this.companionState = this.createCompanionStateFromSave();
+        this.publishRuntimeState(true);
+        break;
       case "direction-start":
+        if (this.pausedByShell) {
+          return;
+        }
+
         primeAudio();
         if (
           (this.interactionMode === "garden-menu" ||
@@ -874,11 +990,63 @@ export class WorldScene extends Phaser.Scene {
         }
         break;
       case "action":
+        if (this.pausedByShell) {
+          return;
+        }
+
         primeAudio();
         this.touchActionQueued = true;
         break;
     }
   };
+
+  private publishRuntimeState(force = false) {
+    const canPause =
+      !this.pausedByShell && !this.moving && this.interactionMode === "none";
+    const runtimeStateKey = [
+      canPause,
+      this.moving,
+      this.interactionMode,
+      this.currentSave.player.currentMapId,
+      this.currentSave.player.position.x,
+      this.currentSave.player.position.y,
+      this.currentSave.acquiredBodies.join(","),
+      this.currentSave.acquiredMinds.join(","),
+      Object.entries(this.currentSave.inventory)
+        .map(([key, count]) => `${key}:${count}`)
+        .join(","),
+      Object.entries(this.currentSave.questFlags)
+        .map(([key, value]) => `${key}:${String(value)}`)
+        .join(","),
+      Object.entries(this.currentSave.quests)
+        .map(
+          ([key, value]) =>
+            `${key}:${value.state}:${value.trackedObjectiveId ?? ""}:${
+              value.rewardsClaimed ? "claimed" : "pending"
+            }`,
+        )
+        .join(","),
+    ].join("|");
+
+    if (!force && runtimeStateKey === this.lastRuntimeStateKey) {
+      return;
+    }
+
+    this.lastRuntimeStateKey = runtimeStateKey;
+    dispatchGameRuntimeEvent({
+      type: "free-roam",
+      canPause,
+      save: this.currentSave,
+    });
+  }
+
+  private publishBusyState() {
+    this.lastRuntimeStateKey = "busy";
+    dispatchGameRuntimeEvent({
+      type: "busy",
+      canPause: false,
+    });
+  }
 }
 
 function tileToWorldCenter(position: GridPosition): GridPosition {

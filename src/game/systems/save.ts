@@ -5,6 +5,8 @@ import {
   type WorldMapId,
 } from "@/game/data/maps";
 import { MOTE_MINDS, STARTER_MIND_ID } from "@/game/data/minds";
+import { TRIALS } from "@/game/data/trials";
+import { INITIAL_INVENTORY } from "@/game/systems/inventory";
 import {
   INITIAL_ACQUIRED_MIND_IDS,
   normalizeAcquiredMindIds,
@@ -15,10 +17,29 @@ import {
   MAX_CIRCLE_SLOTS,
   setCircleSlot,
 } from "@/game/systems/moteCircle";
-import type { CircleSlot, QuestFlagValue, SaveGame } from "@/game/types/save";
+import {
+  createInitialQuestState,
+  getCurrentObjective,
+  isQuestCompleted,
+  migrateQuestStateFromLegacy,
+  validateQuestState,
+} from "@/game/systems/quests";
+import type {
+  CircleSlot,
+  QuestFlagValue,
+  SaveGame,
+  SaveSlotId,
+  SaveSlotMetadata,
+  SaveSlotRecord,
+  SaveSlotState,
+} from "@/game/types/save";
 
-export const SAVE_SCHEMA_VERSION = 1;
+export const SAVE_SCHEMA_VERSION = 2;
 export const SAVE_STORAGE_KEY = "mote:save";
+export const SAVE_SLOT_SCHEMA_VERSION = 1;
+export const SAVE_SLOT_STORAGE_KEY_PREFIX = "mote:save-slot:";
+export const ACTIVE_SAVE_SLOT_STORAGE_KEY = "mote:active-save-slot";
+export const SAVE_SLOT_IDS = ["slot-1", "slot-2", "slot-3"] as const;
 
 export type SaveStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 export type SaveMigration = (
@@ -27,7 +48,7 @@ export type SaveMigration = (
 
 const SAVE_MIGRATIONS: Partial<Record<number, SaveMigration>> = {
   0: (save) => ({
-    version: SAVE_SCHEMA_VERSION,
+    version: 1,
     player: save.player ?? {
       name: "Caretaker",
       currentMapId: "garden",
@@ -43,6 +64,23 @@ const SAVE_MIGRATIONS: Partial<Record<number, SaveMigration>> = {
       ? normalizeAcquiredMindIds(save.acquiredMinds.filter(isString))
       : [...INITIAL_ACQUIRED_MIND_IDS],
   }),
+  1: (save) => ({
+    ...save,
+    version: SAVE_SCHEMA_VERSION,
+    quests: isRecord(save.quests)
+      ? save.quests
+      : migrateQuestStateFromLegacy({
+          questFlags: isRecord(save.questFlags)
+            ? (validateQuestFlags(save.questFlags) ?? {})
+            : {},
+          acquiredBodies: Array.isArray(save.acquiredBodies)
+            ? save.acquiredBodies.filter(isString)
+            : undefined,
+          inventory: isRecord(save.inventory)
+            ? (validateInventory(save.inventory) ?? undefined)
+            : undefined,
+        }),
+  }),
 };
 
 export function createInitialSaveGame(): SaveGame {
@@ -54,8 +92,9 @@ export function createInitialSaveGame(): SaveGame {
       position: WORLD_MAPS.garden.start,
     },
     circle: createInitialCircle(),
-    inventory: {},
+    inventory: { ...INITIAL_INVENTORY },
     questFlags: {},
+    quests: createInitialQuestState(),
     acquiredBodies: [STARTER_BODY_ID],
     acquiredMinds: [...INITIAL_ACQUIRED_MIND_IDS],
   };
@@ -106,8 +145,18 @@ export function loadSaveGame(
   }
 
   try {
-    const serialized = storage.getItem(SAVE_STORAGE_KEY);
-    return serialized ? parseSaveGame(serialized) : null;
+    migrateLegacyAutosave(storage);
+
+    const activeSlotId = getActiveSaveSlotId(storage);
+    const activeSlot = activeSlotId
+      ? readSaveSlot(activeSlotId, storage)
+      : null;
+
+    if (activeSlot?.status === "valid") {
+      return activeSlot.record.save;
+    }
+
+    return getLatestValidSaveSlot(listSaveSlots(storage))?.record.save ?? null;
   } catch {
     return null;
   }
@@ -116,14 +165,20 @@ export function loadSaveGame(
 export function saveGame(
   save: SaveGame,
   storage: SaveStorage | null = getBrowserStorage(),
+  slotId: SaveSlotId | null = null,
 ): boolean {
   if (!storage) {
     return false;
   }
 
   try {
-    storage.setItem(SAVE_STORAGE_KEY, serializeSaveGame(save));
-    return true;
+    return Boolean(
+      writeSaveSlot(
+        slotId ?? getActiveSaveSlotId(storage) ?? SAVE_SLOT_IDS[0],
+        save,
+        storage,
+      ),
+    );
   } catch {
     return false;
   }
@@ -137,10 +192,187 @@ export function clearSaveGame(
   }
 
   try {
+    const activeSlotId = getActiveSaveSlotId(storage);
+
+    if (activeSlotId) {
+      storage.removeItem(getSaveSlotStorageKey(activeSlotId));
+    }
+
     storage.removeItem(SAVE_STORAGE_KEY);
+    storage.removeItem(ACTIVE_SAVE_SLOT_STORAGE_KEY);
     return true;
   } catch {
     return false;
+  }
+}
+
+export function getSaveSlotStorageKey(slotId: SaveSlotId): string {
+  return `${SAVE_SLOT_STORAGE_KEY_PREFIX}${slotId}`;
+}
+
+export function listSaveSlots(
+  storage: SaveStorage | null = getBrowserStorage(),
+): SaveSlotState[] {
+  if (!storage) {
+    return SAVE_SLOT_IDS.map((slotId) => ({ status: "empty", slotId }));
+  }
+
+  migrateLegacyAutosave(storage);
+  return SAVE_SLOT_IDS.map((slotId) => readSaveSlot(slotId, storage));
+}
+
+export function readSaveSlot(
+  slotId: SaveSlotId,
+  storage: SaveStorage | null = getBrowserStorage(),
+): SaveSlotState {
+  if (!storage) {
+    return { status: "empty", slotId };
+  }
+
+  try {
+    const serialized = storage.getItem(getSaveSlotStorageKey(slotId));
+
+    if (!serialized) {
+      return { status: "empty", slotId };
+    }
+
+    const record = parseSaveSlotRecord(serialized, slotId);
+    return record
+      ? { status: "valid", slotId, record }
+      : { status: "corrupt", slotId };
+  } catch {
+    return { status: "corrupt", slotId };
+  }
+}
+
+export function writeSaveSlot(
+  slotId: SaveSlotId,
+  save: SaveGame,
+  storage: SaveStorage | null = getBrowserStorage(),
+  updatedAt = new Date().toISOString(),
+): SaveSlotRecord | null {
+  if (!storage) {
+    return null;
+  }
+
+  const validSave = validateSaveGame(save);
+
+  if (!validSave) {
+    return null;
+  }
+
+  const record: SaveSlotRecord = {
+    version: SAVE_SLOT_SCHEMA_VERSION,
+    slotId,
+    metadata: createSaveSlotMetadata(validSave, updatedAt),
+    save: validSave,
+  };
+
+  try {
+    storage.setItem(getSaveSlotStorageKey(slotId), JSON.stringify(record));
+    storage.setItem(SAVE_STORAGE_KEY, serializeSaveGame(validSave));
+    setActiveSaveSlotId(slotId, storage);
+    return record;
+  } catch {
+    return null;
+  }
+}
+
+export function deleteSaveSlot(
+  slotId: SaveSlotId,
+  storage: SaveStorage | null = getBrowserStorage(),
+): boolean {
+  if (!storage) {
+    return false;
+  }
+
+  try {
+    storage.removeItem(getSaveSlotStorageKey(slotId));
+
+    if (getActiveSaveSlotId(storage) === slotId) {
+      storage.removeItem(ACTIVE_SAVE_SLOT_STORAGE_KEY);
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function getActiveSaveSlotId(
+  storage: SaveStorage | null = getBrowserStorage(),
+): SaveSlotId | null {
+  if (!storage) {
+    return null;
+  }
+
+  try {
+    const value = storage.getItem(ACTIVE_SAVE_SLOT_STORAGE_KEY);
+    return value && isSaveSlotId(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setActiveSaveSlotId(
+  slotId: SaveSlotId,
+  storage: SaveStorage | null = getBrowserStorage(),
+): boolean {
+  if (!storage) {
+    return false;
+  }
+
+  try {
+    storage.setItem(ACTIVE_SAVE_SLOT_STORAGE_KEY, slotId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function createSaveSlotMetadata(
+  save: SaveGame,
+  updatedAt = new Date().toISOString(),
+): SaveSlotMetadata {
+  const map = WORLD_MAPS[save.player.currentMapId];
+
+  return {
+    playerName: save.player.name,
+    mapId: save.player.currentMapId,
+    mapName: map.name,
+    chapterLabel: getChapterLabel(save),
+    updatedAt,
+    acquiredBodyCount: save.acquiredBodies.length,
+    trialMarks: getTrialMarks(save),
+  };
+}
+
+export function migrateLegacyAutosave(
+  storage: SaveStorage | null = getBrowserStorage(),
+): SaveSlotRecord | null {
+  if (!storage) {
+    return null;
+  }
+
+  const hasValidSlot = SAVE_SLOT_IDS.some(
+    (slotId) => readSaveSlot(slotId, storage).status === "valid",
+  );
+
+  if (hasValidSlot) {
+    return null;
+  }
+
+  try {
+    const serialized = storage.getItem(SAVE_STORAGE_KEY);
+    const oldSave = serialized ? parseSaveGame(serialized) : null;
+
+    if (!oldSave) {
+      return null;
+    }
+
+    return writeSaveSlot(SAVE_SLOT_IDS[0], oldSave, storage);
+  } catch {
+    return null;
   }
 }
 
@@ -160,12 +392,18 @@ export function validateSaveGame(value: unknown): SaveGame | null {
     MOTE_BODIES,
   );
   const acquiredMinds = validateKnownIdList(migrated.acquiredMinds, MOTE_MINDS);
+  const quests = validateQuestState(migrated.quests, {
+    questFlags: questFlags ?? undefined,
+    acquiredBodies: acquiredBodies ?? undefined,
+    inventory: inventory ?? undefined,
+  });
 
   if (
     !player ||
     !circle ||
     !inventory ||
     !questFlags ||
+    !quests ||
     !acquiredBodies ||
     !acquiredMinds
   ) {
@@ -178,6 +416,7 @@ export function validateSaveGame(value: unknown): SaveGame | null {
     circle,
     inventory,
     questFlags,
+    quests,
     acquiredBodies,
     acquiredMinds: normalizeAcquiredMindIds(acquiredMinds),
   };
@@ -203,6 +442,124 @@ export function migrateSaveData(value: unknown): unknown {
   }
 
   return current;
+}
+
+function parseSaveSlotRecord(
+  serialized: string,
+  expectedSlotId: SaveSlotId,
+): SaveSlotRecord | null {
+  try {
+    return validateSaveSlotRecord(JSON.parse(serialized), expectedSlotId);
+  } catch {
+    return null;
+  }
+}
+
+function validateSaveSlotRecord(
+  value: unknown,
+  expectedSlotId: SaveSlotId,
+): SaveSlotRecord | null {
+  if (
+    !isRecord(value) ||
+    value.version !== SAVE_SLOT_SCHEMA_VERSION ||
+    typeof value.slotId !== "string" ||
+    value.slotId !== expectedSlotId ||
+    !isSaveSlotId(value.slotId)
+  ) {
+    return null;
+  }
+
+  const save = validateSaveGame(value.save);
+  const metadata = validateSaveSlotMetadata(value.metadata, save);
+
+  if (!save || !metadata) {
+    return null;
+  }
+
+  return {
+    version: SAVE_SLOT_SCHEMA_VERSION,
+    slotId: value.slotId,
+    metadata,
+    save,
+  };
+}
+
+function validateSaveSlotMetadata(
+  value: unknown,
+  save: SaveGame | null,
+): SaveSlotMetadata | null {
+  if (
+    !save ||
+    !isRecord(value) ||
+    typeof value.playerName !== "string" ||
+    typeof value.mapId !== "string" ||
+    !isWorldMapId(value.mapId) ||
+    typeof value.mapName !== "string" ||
+    typeof value.chapterLabel !== "string" ||
+    typeof value.updatedAt !== "string" ||
+    !isNonNegativeInteger(value.acquiredBodyCount) ||
+    !Array.isArray(value.trialMarks) ||
+    !value.trialMarks.every(isString)
+  ) {
+    return null;
+  }
+
+  return {
+    playerName: value.playerName,
+    mapId: value.mapId,
+    mapName: value.mapName,
+    chapterLabel: value.chapterLabel,
+    updatedAt: value.updatedAt,
+    acquiredBodyCount: value.acquiredBodyCount,
+    trialMarks: value.trialMarks,
+  };
+}
+
+function getLatestValidSaveSlot(
+  slots: readonly SaveSlotState[],
+): Extract<SaveSlotState, { status: "valid" }> | null {
+  const validSlots = slots.filter((slot) => slot.status === "valid");
+
+  if (validSlots.length === 0) {
+    return null;
+  }
+
+  return validSlots.reduce((latest, slot) =>
+    Date.parse(slot.record.metadata.updatedAt) >
+    Date.parse(latest.record.metadata.updatedAt)
+      ? slot
+      : latest,
+  );
+}
+
+function getChapterLabel(save: SaveGame): string {
+  const firstTrial = TRIALS["first-trial"];
+
+  if (
+    save.questFlags[firstTrial.completionFlag] === true ||
+    isQuestCompleted(save.quests, "trial:precision-mark")
+  ) {
+    return "Chapter 1 - Precision Mark";
+  }
+
+  if (save.player.currentMapId === "optima-trial-arena") {
+    return "Chapter 1 - Optima Trial";
+  }
+
+  if (save.player.currentMapId === "motehaven-path") {
+    return "Chapter 1 - Route 1";
+  }
+
+  return getCurrentObjective(save);
+}
+
+function getTrialMarks(save: SaveGame): string[] {
+  return Object.values(TRIALS).flatMap((trial) =>
+    (save.inventory[trial.rewardInventoryKey] ?? 0) > 0 ||
+    save.questFlags[trial.completionFlag] === true
+      ? [trial.rewardLabel]
+      : [],
+  );
 }
 
 function getBrowserStorage(): SaveStorage | null {
@@ -365,6 +722,10 @@ function validateKnownIdList(
 
 function isWorldMapId(value: string): value is WorldMapId {
   return Object.hasOwn(WORLD_MAPS, value);
+}
+
+function isSaveSlotId(value: string): value is SaveSlotId {
+  return SAVE_SLOT_IDS.some((slotId) => slotId === value);
 }
 
 function validateGridPosition(

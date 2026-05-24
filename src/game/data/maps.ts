@@ -1,3 +1,4 @@
+import type { DialogueId } from "@/game/data/dialogue";
 import type { EncounterTableId } from "@/game/data/encounters";
 import type { TrialId } from "@/game/data/trials";
 
@@ -26,6 +27,7 @@ export type WorldNpc = {
   kind?: "npc" | "companion" | "wild-mote" | "trial-rival";
   position: GridPosition;
   dialogue: string[];
+  dialogueId?: DialogueId;
   battleBodyId?: string;
   trialId?: TrialId;
 };
@@ -146,11 +148,13 @@ export const WORLD_MAPS: Record<WorldMapId, WorldMap> = {
         kind: "companion",
         position: { x: 6, y: 14 },
         dialogue: [],
+        dialogueId: "luma-garden",
       },
       {
         id: "tessera-guide",
         name: "Guide Mira",
         position: { x: 14, y: 7 },
+        dialogueId: "guide-mira",
         dialogue: [
           "Motehaven starts with small steps. Watch the hedges, then try the east gate.",
         ],
@@ -232,6 +236,7 @@ export const WORLD_MAPS: Record<WorldMapId, WorldMap> = {
         kind: "trial-rival",
         position: { x: 11, y: 7 },
         dialogue: [],
+        dialogueId: "cal-venn",
         trialId: "first-trial",
       },
     ],

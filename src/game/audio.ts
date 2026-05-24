@@ -108,6 +108,16 @@ let masterGain: GainNode | null = null;
 let musicTimer: number | null = null;
 let musicStep = 0;
 let activeMusicMode: MusicMode | null = null;
+let soundVolume = 0.8;
+let musicVolume = 0.6;
+
+export function setAudioOptions(options: {
+  soundVolume: number;
+  musicVolume: number;
+}) {
+  soundVolume = clampVolume(options.soundVolume);
+  musicVolume = clampVolume(options.musicVolume);
+}
 
 export function primeAudio() {
   const context = getAudioContext();
@@ -131,6 +141,7 @@ export function playGameSound(sound: GameSound) {
     scheduleTone(context, {
       ...tone,
       delay: (tone.delay ?? 0) + now,
+      gain: (tone.gain ?? 0.04) * soundVolume,
     });
   }
 }
@@ -161,14 +172,14 @@ export function startMusicLoop(mode: MusicMode) {
       duration: 0.18,
       delay: context.currentTime,
       type: "triangle",
-      gain: 0.018,
+      gain: 0.018 * musicVolume,
     });
     scheduleTone(context, {
       frequency: bass,
       duration: 0.24,
       delay: context.currentTime,
       type: "sine",
-      gain: 0.012,
+      gain: 0.012 * musicVolume,
     });
   };
 
@@ -214,7 +225,9 @@ function getAudioContext(): AudioContext | null {
 }
 
 function scheduleTone(context: AudioContext, tone: Tone) {
-  if (!masterGain) {
+  const peakGain = tone.gain ?? 0.04;
+
+  if (!masterGain || peakGain <= 0) {
     return;
   }
 
@@ -226,10 +239,14 @@ function scheduleTone(context: AudioContext, tone: Tone) {
   oscillator.type = tone.type ?? "sine";
   oscillator.frequency.setValueAtTime(tone.frequency, startTime);
   gain.gain.setValueAtTime(0.0001, startTime);
-  gain.gain.exponentialRampToValueAtTime(tone.gain ?? 0.04, startTime + 0.01);
+  gain.gain.exponentialRampToValueAtTime(peakGain, startTime + 0.01);
   gain.gain.exponentialRampToValueAtTime(0.0001, endTime);
   oscillator.connect(gain);
   gain.connect(masterGain);
   oscillator.start(startTime);
   oscillator.stop(endTime + 0.02);
+}
+
+function clampVolume(value: number): number {
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
 }

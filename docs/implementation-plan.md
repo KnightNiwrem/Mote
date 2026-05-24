@@ -89,6 +89,7 @@ Deliverables:
 - Define the golden path above as the minimum manual regression route.
 - Confirm current validation status.
 - Create issues or task notes for title/save, pause/menu, inventory, quests, dialogue, content pipeline, and battle command gaps.
+- Phase 8 task note: `docs/phase-8-recovery-baseline.md`.
 
 Definition of done:
 
