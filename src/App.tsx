@@ -727,17 +727,26 @@ function PauseOverlay({
   slots: SaveSlotState[];
 }) {
   const pauseMenu = createPauseMenuModel(pauseState.selectedMenuItemId);
+  const activePanel =
+    pauseState.panel === "root" && pauseState.selectedMenuItemId !== "return"
+      ? pauseState.selectedMenuItemId
+      : pauseState.panel;
 
   return (
-    <div className="absolute inset-0 z-10 grid gap-3 bg-[#08110f]/90 p-3 text-[#f8fafc] sm:grid-cols-[168px_1fr]">
-      <nav className={cn(panelClass, "grid content-start gap-2 p-3")}>
+    <div className="absolute inset-0 z-10 grid grid-cols-[112px_minmax(0,1fr)] gap-2 bg-[#08110f]/90 p-2 text-[#f8fafc] sm:grid-cols-[168px_minmax(0,1fr)] sm:gap-3 sm:p-3">
+      <nav
+        className={cn(
+          panelClass,
+          "grid content-start gap-1 p-1 sm:gap-2 sm:p-3",
+        )}
+      >
         {pauseMenu.items.map((item) => (
           <Button
             className={cn(
-              "justify-start border-[#4f8f79] bg-[#132820] text-[#f8fafc] hover:bg-[#1f513f]",
+              "h-7 justify-start border-[#4f8f79] bg-[#132820] px-2 text-xs text-[#f8fafc] hover:bg-[#1f513f] sm:h-8 sm:px-3 sm:text-sm",
               pauseState.selectedMenuItemId === item.id &&
                 "border-[#fbbf24] text-[#fef3c7]",
-              pauseState.panel === item.id && "bg-[#1f513f]",
+              activePanel === item.id && "bg-[#1f513f]",
               item.id === "return" &&
                 "border-[#67e8f9] bg-[#0d1d18] hover:bg-[#173f32]",
             )}
@@ -757,11 +766,12 @@ function PauseOverlay({
           </Button>
         ))}
       </nav>
-      <section className={cn(panelClass, "min-h-0 overflow-auto p-3")}>
-        {pauseState.panel === "root" ? (
-          <PauseRoot latestSave={latestSave} />
-        ) : null}
-        {pauseState.panel === "motes" ? (
+      <section
+        className={cn(panelClass, "min-w-0 overflow-auto p-2 sm:p-3")}
+        data-pause-panel={activePanel}
+      >
+        {activePanel === "root" ? <PauseRoot latestSave={latestSave} /> : null}
+        {activePanel === "motes" ? (
           <MotesPanel
             feedback={circleFeedback}
             latestSave={latestSave}
@@ -769,7 +779,7 @@ function PauseOverlay({
             onFeedback={onCircleFeedback}
           />
         ) : null}
-        {pauseState.panel === "inventory" ? (
+        {activePanel === "inventory" ? (
           <InventoryPanel
             feedback={inventoryFeedback}
             latestSave={latestSave}
@@ -777,10 +787,10 @@ function PauseOverlay({
             onUseItem={onUseInventoryItem}
           />
         ) : null}
-        {pauseState.panel === "quests" ? (
+        {activePanel === "quests" ? (
           <QuestsPanel latestSave={latestSave} />
         ) : null}
-        {pauseState.panel === "save" ? (
+        {activePanel === "save" ? (
           <SavePanel
             activeSlotId={activeSlotId}
             confirmOverwrite={confirmOverwrite}
@@ -791,7 +801,7 @@ function PauseOverlay({
             slots={slots}
           />
         ) : null}
-        {pauseState.panel === "options" ? (
+        {activePanel === "options" ? (
           <OptionsPanel onChange={onOptionsChange} options={options} />
         ) : null}
       </section>
